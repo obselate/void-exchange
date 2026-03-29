@@ -57,17 +57,30 @@ function App() {
             <div style={{ padding: "24px 16px", maxWidth: 500, margin: "0 auto" }}>
                 {/* Header */}
                 <div className="header">
-                    <h1>XAZPOOL</h1>
-                    <button onClick={() => account?.address ? handleDisconnect() : handleConnect()}>
+                    <h1 style={{ fontSize: 13, letterSpacing: "4px" }}>VOID EXCHANGE</h1>
+                    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                        {poolId && pool && (
+                            <span style={{
+                                fontFamily: '"Frontier Disket Mono", monospace',
+                                fontSize: 11, color: "#888", letterSpacing: "2px",
+                            }}>
+                                {pool.config.banner || "MARKET"}
+                            </span>
+                        )}
                         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <span style={{
                                 width: 6, height: 6, borderRadius: "50%",
                                 background: "var(--green)", boxShadow: "0 0 8px var(--green-glow)",
                                 display: "inline-block",
                             }} />
-                            {`${account.address.slice(0, 6)}...${account.address.slice(-4)}`}
+                            <button onClick={handleDisconnect} style={{
+                                padding: "4px 8px", fontSize: 10, letterSpacing: "2px",
+                                color: "var(--green)",
+                            }}>
+                                DOCKED
+                            </button>
                         </span>
-                    </button>
+                    </div>
                 </div>
 
                 {poolId && pool ? (
@@ -89,13 +102,15 @@ function App() {
                         </div>
                     </div>
                 ) : (
-                    <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
+                    <div className="terminal-panel" data-label="Market Terminal" style={{ textAlign: "center", padding: "40px 20px" }}>
                         <div style={{
                             fontFamily: '"Frontier Disket Mono", monospace',
-                            fontSize: 12, color: "var(--text-muted)",
-                            letterSpacing: "0.1em",
+                            fontSize: 12, color: "var(--text-muted)", letterSpacing: "0.1em",
                         }}>
-                            // NO MARKET CONFIGURED{IS_OPS ? " — CREATE ONE BELOW" : ""}
+                            NO ACTIVE MARKET
+                        </div>
+                        <div style={{ fontSize: 11, color: "#555", marginTop: 8 }}>
+                            Configure a Market ID in Station Operations, or establish a new market at your SSU.
                         </div>
                     </div>
                 )}
@@ -107,7 +122,7 @@ function App() {
                             width: "100%", marginBottom: 12,
                             borderColor: authStatus?.startsWith("Error") ? "var(--red)" : undefined,
                         }}>
-                            {authStatus || "AUTHORIZE AMM EXTENSION"}
+                            {authStatus || "AUTHORIZE MARKET"}
                         </button>
                         <StationOps ssuOwnerCapId={SSU_OWNER_CAP_ID} onPoolCreated={handlePoolCreated} poolConfig={pool?.config} />
                     </>
