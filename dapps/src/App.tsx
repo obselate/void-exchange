@@ -4,6 +4,7 @@ import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { SwapPanel } from "./components/SwapPanel";
 import { AdminPanel } from "./components/AdminPanel";
 import { StatusBar } from "./components/StatusBar";
+import { LandingPage } from "./components/LandingPage";
 import { useAmmPool } from "./hooks/useAmmPool";
 import { ITEM_NAMES } from "./config";
 import { buildAuthorizeTx } from "./hooks/useAmmTransactions";
@@ -41,14 +42,22 @@ function App() {
         localStorage.setItem("amm_pool_id", id);
     };
 
+    if (!account) {
+        return (
+            <>
+                <LandingPage onConnect={handleConnect} />
+                <StatusBar />
+            </>
+        );
+    }
+
     return (
         <>
-        <div style={{ padding: "24px 16px", maxWidth: 500, margin: "0 auto" }}>
-            {/* Header */}
-            <div className="header">
-                <h1>XAZPOOL</h1>
-                <button onClick={() => account?.address ? handleDisconnect() : handleConnect()}>
-                    {account ? (
+            <div style={{ padding: "24px 16px", maxWidth: 500, margin: "0 auto" }}>
+                {/* Header */}
+                <div className="header">
+                    <h1>XAZPOOL</h1>
+                    <button onClick={() => account?.address ? handleDisconnect() : handleConnect()}>
                         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <span style={{
                                 width: 6, height: 6, borderRadius: "50%",
@@ -57,73 +66,54 @@ function App() {
                             }} />
                             {`${account.address.slice(0, 6)}...${account.address.slice(-4)}`}
                         </span>
-                    ) : "CONNECT WALLET"}
-                </button>
-            </div>
-
-            {!account ? (
-                <div className="panel" style={{ textAlign: "center", padding: "60px 20px" }}>
-                    <div style={{
-                        fontFamily: '"Frontier Disket Mono", monospace',
-                        fontSize: 14, color: "var(--text-muted)",
-                        letterSpacing: "0.1em", marginBottom: 8,
-                    }}>
-                        // AWAITING CONNECTION
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                        Connect your EVE Frontier wallet to access the market
-                    </div>
+                    </button>
                 </div>
-            ) : (
-                <>
-                    {poolId && pool ? (
-                        <SwapPanel
-                            poolId={poolId}
-                            poolConfig={pool.config}
-                            tokenALabel={itemName(pool.config.typeIdA)}
-                            tokenBLabel={itemName(pool.config.typeIdB)}
-                            banner={pool.config.banner}
-                            onSwapComplete={() => refetchPool()}
-                        />
-                    ) : poolId ? (
-                        <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
-                            <div style={{
-                                fontFamily: '"Frontier Disket Mono", monospace',
-                                fontSize: 12, color: "var(--accent)",
-                                letterSpacing: "0.1em", animation: "pulse 1.5s ease infinite",
-                            }}>
-                                // LOADING MARKET DATA...
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
-                            <div style={{
-                                fontFamily: '"Frontier Disket Mono", monospace',
-                                fontSize: 12, color: "var(--text-muted)",
-                                letterSpacing: "0.1em",
-                            }}>
-                                // NO MARKET CONFIGURED{IS_ADMIN ? " — CREATE ONE BELOW" : ""}
-                            </div>
-                        </div>
-                    )}
 
-                    {IS_ADMIN && (
-                        <>
-                            <div className="divider" />
-                            <button onClick={handleAuthorize} style={{
-                                width: "100%", marginBottom: 12,
-                                borderColor: authStatus?.startsWith("Error") ? "var(--red)" : undefined,
-                            }}>
-                                {authStatus || "AUTHORIZE AMM EXTENSION"}
-                            </button>
-                            <AdminPanel ssuOwnerCapId={SSU_OWNER_CAP_ID} onPoolCreated={handlePoolCreated} poolConfig={pool?.config} />
-                        </>
-                    )}
-                </>
-            )}
+                {poolId && pool ? (
+                    <SwapPanel
+                        poolId={poolId}
+                        poolConfig={pool.config}
+                        tokenALabel={itemName(pool.config.typeIdA)}
+                        tokenBLabel={itemName(pool.config.typeIdB)}
+                        banner={pool.config.banner}
+                        onSwapComplete={() => refetchPool()}
+                    />
+                ) : poolId ? (
+                    <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
+                        <div style={{
+                            fontFamily: '"Frontier Disket Mono", monospace',
+                            fontSize: 12, color: "var(--accent)",
+                            letterSpacing: "0.1em", animation: "pulse 1.5s ease infinite",
+                        }}>
+                            // LOADING MARKET DATA...
+                        </div>
+                    </div>
+                ) : (
+                    <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
+                        <div style={{
+                            fontFamily: '"Frontier Disket Mono", monospace',
+                            fontSize: 12, color: "var(--text-muted)",
+                            letterSpacing: "0.1em",
+                        }}>
+                            // NO MARKET CONFIGURED{IS_ADMIN ? " — CREATE ONE BELOW" : ""}
+                        </div>
+                    </div>
+                )}
 
-        </div>
-        <StatusBar />
+                {IS_ADMIN && (
+                    <>
+                        <div className="divider" />
+                        <button onClick={handleAuthorize} style={{
+                            width: "100%", marginBottom: 12,
+                            borderColor: authStatus?.startsWith("Error") ? "var(--red)" : undefined,
+                        }}>
+                            {authStatus || "AUTHORIZE AMM EXTENSION"}
+                        </button>
+                        <AdminPanel ssuOwnerCapId={SSU_OWNER_CAP_ID} onPoolCreated={handlePoolCreated} poolConfig={pool?.config} />
+                    </>
+                )}
+            </div>
+            <StatusBar />
         </>
     );
 }
