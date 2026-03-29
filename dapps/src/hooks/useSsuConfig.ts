@@ -25,17 +25,24 @@ async function resolveSsuFields(ssuId: string): Promise<{ ownerCapId: string; ch
     const ssu = await suiClient.getObject({ id: ssuId, options: { showContent: true } });
     const fields = (ssu.data?.content as any)?.fields;
     if (!fields) throw new Error(`SSU not found: ${ssuId}`);
-    return {
-        ownerCapId: fields.owner_cap_id,
-        characterId: fields.character_id,
-    };
+
+    const ownerCapId: string = fields.owner_cap_id;
+
+    // The SSU's OwnerCap is owned by the Character object.
+    // Fetch the OwnerCap to find which Character owns this SSU.
+    const capObj = await suiClient.getObject({ id: ownerCapId, options: { showOwner: true } });
+    const capOwner = (capObj.data?.owner as any)?.AddressOwner;
+    if (!capOwner) throw new Error(`Cannot resolve Character from OwnerCap ${ownerCapId}`);
+
+    return { ownerCapId, characterId: capOwner };
 }
 
-async function checkOwnership(ownerCapId: string, walletAddress: string): Promise<boolean> {
+async function checkOwnership(characterId: string, walletAddress: string): Promise<boolean> {
+    // The Character object has a `character_address` field = the player's wallet address
     try {
-        const obj = await suiClient.getObject({ id: ownerCapId, options: { showOwner: true } });
-        const owner = obj.data?.owner as any;
-        return owner?.AddressOwner === walletAddress;
+        const obj = await suiClient.getObject({ id: characterId, options: { showContent: true } });
+        const fields = (obj.data?.content as any)?.fields;
+        return fields?.character_address === walletAddress;
     } catch {
         return false;
     }
@@ -102,7 +109,7 @@ export function useSsuConfig(ssuId: string | null) {
 
             const [characterIsv, isOwner, poolIds] = await Promise.all([
                 resolveIsv(ssuFields.characterId),
-                walletAddress ? checkOwnership(ssuFields.ownerCapId, walletAddress) : false,
+                walletAddress ? checkOwnership(ssuFields.characterId, walletAddress) : false,
                 discoverPools(ssuId),
             ]);
 
