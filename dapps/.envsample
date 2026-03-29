@@ -1,8 +1,6 @@
-# Change the following to the preferred smart assembly
-# If defined, this will take priority over values passed via URL query param
-VITE_OBJECT_ID=
-
-# World package id
-VITE_EVE_WORLD_PACKAGE_ID="0xf115375112eab1dcc1bb4af81a37d47ca7e95c2eb990cefa1f12f82d689e9543"
+# Network-wide contract addresses (same for all SSUs)
+VITE_EVE_WORLD_PACKAGE_ID="0x28b497559d65ab320d9da4613bf2498d5946b2c0ae3597ccfda3072ce127448c"
+VITE_AMM_ORIGINAL_PACKAGE_ID="0x..."
+VITE_AMM_PACKAGE_ID="0x..."
 
 VITE_SUI_GRAPHQL_ENDPOINT="https://graphql.testnet.sui.io/graphql"
