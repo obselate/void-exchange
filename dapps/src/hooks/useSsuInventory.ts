@@ -1,0 +1,104 @@
+import { useQuery } from "@tanstack/react-query";
+import { suiClient } from "./useDevInspect";
+import { SSU_OBJECT_ID } from "../config";
+import { blake2b } from "@noble/hashes/blake2";
+import { bytesToHex } from "@noble/hashes/utils";
+
+export type InventoryItem = {
+    typeId: string;
+    quantity: number;
+    volume: number;
+};
+
+export type SsuInventory = {
+    main: InventoryItem[];
+    open: InventoryItem[];
+    owned: InventoryItem[];
+};
+
+function computeOpenStorageKey(ssuId: string): string {
+    const idBytes = hexToBytes(ssuId.replace("0x", ""));
+    const suffix = new TextEncoder().encode("open_inventory");
+    const data = new Uint8Array(idBytes.length + suffix.length);
+    data.set(idBytes);
+    data.set(suffix, idBytes.length);
+    return "0x" + bytesToHex(blake2b(data, { dkLen: 32 }));
+}
+
+function hexToBytes(hex: string): Uint8Array {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+        bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return bytes;
+}
+
+export function useSsuInventory() {
+    return useQuery({
+        queryKey: ["ssu-inventory", SSU_OBJECT_ID],
+        queryFn: async (): Promise<SsuInventory | null> => {
+            try {
+                const ssu = await suiClient.getObject({
+                    id: SSU_OBJECT_ID,
+                    options: { showContent: true },
+                });
+                const fields = (ssu.data?.content as any)?.fields;
+                if (!fields) return null;
+
+                const ownerCapId: string = fields.owner_cap_id;
+                const openKey = computeOpenStorageKey(SSU_OBJECT_ID);
+
+                const dfList = await suiClient.getDynamicFields({ parentId: SSU_OBJECT_ID, limit: 50 });
+
+                const main: InventoryItem[] = [];
+                const open: InventoryItem[] = [];
+                const owned: InventoryItem[] = [];
+
+                for (const df of dfList.data) {
+                    if (df.name?.type !== "0x2::object::ID") continue;
+
+                    const obj = await suiClient.getDynamicFieldObject({
+                        parentId: SSU_OBJECT_ID,
+                        name: df.name,
+                    });
+
+                    const value = (obj.data?.content as any)?.fields?.value?.fields;
+                    if (!value?.items) continue;
+
+                    const items = parseItems(value.items);
+                    const keyId: string = df.name.value;
+
+                    if (keyId === ownerCapId) {
+                        main.push(...items);
+                    } else if (keyId === openKey) {
+                        open.push(...items);
+                    } else {
+                        owned.push(...items);
+                    }
+                }
+
+                return { main, open, owned };
+            } catch (e) {
+                console.error("Inventory fetch error:", e);
+                return null;
+            }
+        },
+        refetchInterval: 5_000,
+        staleTime: 0,
+    });
+}
+
+function parseItems(itemsField: any): InventoryItem[] {
+    const entries = itemsField?.fields?.contents || itemsField?.contents || itemsField;
+    if (!Array.isArray(entries)) return [];
+
+    return entries.map((entry: any) => {
+        const f = entry?.fields || entry;
+        const val = f?.value?.fields || f?.value || f;
+        return {
+            typeId: String(val?.type_id ?? f?.key ?? "?"),
+            quantity: Number(val?.quantity ?? 0),
+            volume: Number(val?.volume ?? 0),
+        };
+    });
+}

@@ -1,47 +1,135 @@
-import { Box, Container, Flex, Heading } from "@radix-ui/themes";
-import { WalletStatus } from "./WalletStatus";
-import { abbreviateAddress, useConnection } from "@evefrontier/dapp-kit";
-import { useCurrentAccount } from "@mysten/dapp-kit-react";
+import { useState } from "react";
+import { useConnection } from "@evefrontier/dapp-kit";
+import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
+import { SwapPanel } from "./components/SwapPanel";
+import { AdminPanel } from "./components/AdminPanel";
+import { useAmmPool } from "./hooks/useAmmPool";
+import { ITEM_NAMES } from "./config";
+import { buildAuthorizeTx } from "./hooks/useAmmTransactions";
+
+const DEFAULT_POOL_ID = localStorage.getItem("amm_pool_id") || "";
+const SSU_OWNER_CAP_ID = "0x8b0924695b7fe74f06fb1e7bb1276dc6385e6506e3b9a771f1213fef8247be70";
+const IS_ADMIN = new URLSearchParams(window.location.search).has("admin");
+
+function itemName(typeId: string): string {
+    return ITEM_NAMES[typeId] || `Item #${typeId}`;
+}
 
 function App() {
-  /**
-   * STEP 2 — Wallet connection
-   *
-   * useConnection() (@evefrontier/dapp-kit) → handleConnect, handleDisconnect;
-   * isConnected, walletAddress, hasEveVault. useCurrentAccount()
-   * (@mysten/dapp-kit-react) → account (e.g. account.address) for UI. abbreviateAddress()
-   * (@evefrontier/dapp-kit) for display.
-   */
-  const { handleConnect, handleDisconnect } = useConnection();
-  const account = useCurrentAccount();
+    const { handleConnect, handleDisconnect } = useConnection();
+    const { signAndExecuteTransaction } = useDAppKit();
+    const account = useCurrentAccount();
 
-  return (
-    <Box style={{ padding: "20px" }}>
-      <Flex
-        position="sticky"
-        px="4"
-        py="2"
-        direction="row"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-        }}
-      >
-        <Heading>EVE Frontier dApp Starter Template</Heading>
+    const [poolId, setPoolId] = useState<string>(DEFAULT_POOL_ID);
+    const [authStatus, setAuthStatus] = useState<string | null>(null);
+    const { data: pool, refetch: refetchPool } = useAmmPool(poolId || null);
 
-        {/* STEP 2 — Connect/disconnect; show abbreviated address in header. */}
-        <button
-          onClick={() =>
-            account?.address ? handleDisconnect() : handleConnect()
-          }
-        >
-          {account ? abbreviateAddress(account?.address) : "Connect Wallet"}
-        </button>
-      </Flex>
-      {/* STEP 3 — Same hooks (useConnection, useCurrentAccount) drive WalletStatus; state stays in sync. */}
-      <WalletStatus />
-    </Box>
-  );
+    const handleAuthorize = async () => {
+        setAuthStatus("Authorizing...");
+        try {
+            const tx = await buildAuthorizeTx(SSU_OWNER_CAP_ID);
+            await signAndExecuteTransaction({ transaction: tx });
+            setAuthStatus("Authorized!");
+        } catch (e) {
+            setAuthStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+    };
+
+    const handlePoolCreated = (id: string) => {
+        setPoolId(id);
+        localStorage.setItem("amm_pool_id", id);
+    };
+
+    return (
+        <div style={{ padding: "24px 16px", maxWidth: 500, margin: "0 auto" }}>
+            {/* Header */}
+            <div className="header">
+                <h1>XAZPOOL</h1>
+                <button onClick={() => account?.address ? handleDisconnect() : handleConnect()}>
+                    {account ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{
+                                width: 6, height: 6, borderRadius: "50%",
+                                background: "var(--green)", boxShadow: "0 0 8px var(--green-glow)",
+                                display: "inline-block",
+                            }} />
+                            {`${account.address.slice(0, 6)}...${account.address.slice(-4)}`}
+                        </span>
+                    ) : "CONNECT WALLET"}
+                </button>
+            </div>
+
+            {!account ? (
+                <div className="panel" style={{ textAlign: "center", padding: "60px 20px" }}>
+                    <div style={{
+                        fontFamily: '"Frontier Disket Mono", monospace',
+                        fontSize: 14, color: "var(--text-muted)",
+                        letterSpacing: "0.1em", marginBottom: 8,
+                    }}>
+                        // AWAITING CONNECTION
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                        Connect your EVE Frontier wallet to access the market
+                    </div>
+                </div>
+            ) : (
+                <>
+                    {poolId && pool ? (
+                        <SwapPanel
+                            poolId={poolId}
+                            poolConfig={pool.config}
+                            tokenALabel={itemName(pool.config.typeIdA)}
+                            tokenBLabel={itemName(pool.config.typeIdB)}
+                            banner={pool.config.banner}
+                            onSwapComplete={() => refetchPool()}
+                        />
+                    ) : poolId ? (
+                        <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
+                            <div style={{
+                                fontFamily: '"Frontier Disket Mono", monospace',
+                                fontSize: 12, color: "var(--accent)",
+                                letterSpacing: "0.1em", animation: "pulse 1.5s ease infinite",
+                            }}>
+                                // LOADING MARKET DATA...
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
+                            <div style={{
+                                fontFamily: '"Frontier Disket Mono", monospace',
+                                fontSize: 12, color: "var(--text-muted)",
+                                letterSpacing: "0.1em",
+                            }}>
+                                // NO MARKET CONFIGURED{IS_ADMIN ? " — CREATE ONE BELOW" : ""}
+                            </div>
+                        </div>
+                    )}
+
+                    {IS_ADMIN && (
+                        <>
+                            <div className="divider" />
+                            <button onClick={handleAuthorize} style={{
+                                width: "100%", marginBottom: 12,
+                                borderColor: authStatus?.startsWith("Error") ? "var(--red)" : undefined,
+                            }}>
+                                {authStatus || "AUTHORIZE AMM EXTENSION"}
+                            </button>
+                            <AdminPanel ssuOwnerCapId={SSU_OWNER_CAP_ID} onPoolCreated={handlePoolCreated} poolConfig={pool?.config} />
+                        </>
+                    )}
+                </>
+            )}
+
+            {/* Footer */}
+            <div style={{
+                textAlign: "center", marginTop: 24, fontSize: 10,
+                color: "var(--text-muted)", letterSpacing: "0.1em",
+                fontFamily: '"Frontier Disket Mono", monospace',
+            }}>
+                XAZPOOL // EVE FRONTIER
+            </div>
+        </div>
+    );
 }
 
 export default App;
