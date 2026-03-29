@@ -3,6 +3,7 @@ import { useConnection } from "@evefrontier/dapp-kit";
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { SwapPanel } from "./components/SwapPanel";
 import { AdminPanel } from "./components/AdminPanel";
+import { StatusBar } from "./components/StatusBar";
 import { useAmmPool } from "./hooks/useAmmPool";
 import { ITEM_NAMES } from "./config";
 import { buildAuthorizeTx } from "./hooks/useAmmTransactions";
@@ -41,6 +42,7 @@ function App() {
     };
 
     return (
+        <>
         <div style={{ padding: "24px 16px", maxWidth: 500, margin: "0 auto" }}>
             {/* Header */}
             <div className="header">
@@ -120,15 +122,9 @@ function App() {
                 </>
             )}
 
-            {/* Footer */}
-            <div style={{
-                textAlign: "center", marginTop: 24, fontSize: 10,
-                color: "var(--text-muted)", letterSpacing: "0.1em",
-                fontFamily: '"Frontier Disket Mono", monospace',
-            }}>
-                XAZPOOL // EVE FRONTIER
-            </div>
         </div>
+        <StatusBar />
+        </>
     );
 }
 
