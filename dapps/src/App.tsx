@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useConnection } from "@evefrontier/dapp-kit";
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { SwapPanel } from "./components/SwapPanel";
-import { AdminPanel } from "./components/AdminPanel";
+import { StationOps } from "./components/StationOps";
 import { StatusBar } from "./components/StatusBar";
 import { LandingPage } from "./components/LandingPage";
 import { useAmmPool } from "./hooks/useAmmPool";
@@ -11,7 +11,8 @@ import { buildAuthorizeTx } from "./hooks/useAmmTransactions";
 
 const DEFAULT_POOL_ID = localStorage.getItem("amm_pool_id") || "";
 const SSU_OWNER_CAP_ID = "0x8b0924695b7fe74f06fb1e7bb1276dc6385e6506e3b9a771f1213fef8247be70";
-const IS_ADMIN = new URLSearchParams(window.location.search).has("admin");
+const IS_OPS = new URLSearchParams(window.location.search).has("ops")
+    || new URLSearchParams(window.location.search).has("admin");
 
 function itemName(typeId: string): string {
     return ITEM_NAMES[typeId] || `Item #${typeId}`;
@@ -94,12 +95,12 @@ function App() {
                             fontSize: 12, color: "var(--text-muted)",
                             letterSpacing: "0.1em",
                         }}>
-                            // NO MARKET CONFIGURED{IS_ADMIN ? " — CREATE ONE BELOW" : ""}
+                            // NO MARKET CONFIGURED{IS_OPS ? " — CREATE ONE BELOW" : ""}
                         </div>
                     </div>
                 )}
 
-                {IS_ADMIN && (
+                {IS_OPS && (
                     <>
                         <div className="divider" />
                         <button onClick={handleAuthorize} style={{
@@ -108,7 +109,7 @@ function App() {
                         }}>
                             {authStatus || "AUTHORIZE AMM EXTENSION"}
                         </button>
-                        <AdminPanel ssuOwnerCapId={SSU_OWNER_CAP_ID} onPoolCreated={handlePoolCreated} poolConfig={pool?.config} />
+                        <StationOps ssuOwnerCapId={SSU_OWNER_CAP_ID} onPoolCreated={handlePoolCreated} poolConfig={pool?.config} />
                     </>
                 )}
             </div>

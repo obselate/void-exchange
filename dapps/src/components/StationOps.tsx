@@ -69,7 +69,7 @@ function InvCol({ title, items }: { title: string; items: InventoryItem[] }) {
     );
 }
 
-export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) {
+export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) {
     const { signAndExecuteTransaction } = useDAppKit();
     const account = useCurrentAccount();
     const queryClient = useQueryClient();
@@ -230,11 +230,11 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
         <div className="panel">
             {/* Live inventory — always visible */}
             <div style={{ marginBottom: 16 }}>
-                <div className="label" style={{ marginBottom: 8 }}>SSU Inventory</div>
+                <div className="label" style={{ marginBottom: 8 }}>Station Inventory</div>
                 {inventory ? (
                     <div style={{ display: "flex", gap: 8 }}>
-                        <InvCol title="Main (game UI)" items={inventory.main} />
-                        <InvCol title="Open (reserves)" items={inventory.open} />
+                        <InvCol title="Station Cargo" items={inventory.main} />
+                        <InvCol title="Market Supply" items={inventory.open} />
                     </div>
                 ) : (
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</div>
@@ -244,7 +244,7 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
             <div className="divider" />
 
             {/* Seed liquidity — most used action */}
-            <Section title="Seed Liquidity" defaultOpen={true}>
+            <Section title="Restock Market" defaultOpen={true}>
                 <Row>
                     <div style={{ flex: 1 }}>
                         <Field label={tokenAName}>
@@ -260,7 +260,7 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
                                     disabled={!seedAmountA}
                                     style={{ whiteSpace: "nowrap", padding: "8px 12px" }}
                                 >
-                                    SEED
+                                    RESTOCK
                                 </button>
                             </div>
                         </Field>
@@ -279,7 +279,7 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
                                     disabled={!seedAmountB}
                                     style={{ whiteSpace: "nowrap", padding: "8px 12px" }}
                                 >
-                                    SEED
+                                    RESTOCK
                                 </button>
                             </div>
                         </Field>
@@ -288,7 +288,7 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
             </Section>
 
             {/* Set reserves */}
-            <Section title="Set Reserves" defaultOpen={false}>
+            <Section title="Adjust Supply" defaultOpen={false}>
                 <Row>
                     <div style={{ flex: 1 }}>
                         <Field label={`Reserve A (${tokenAName})`}>
@@ -301,54 +301,59 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
                         </Field>
                     </div>
                 </Row>
-                <button onClick={handleSetReserves} style={{ width: "100%" }}>SET RESERVES</button>
+                <button onClick={handleSetReserves} style={{ width: "100%" }}>SET SUPPLY</button>
             </Section>
 
-            {/* Dynamic fees */}
-            <Section title="Dynamic Fees" defaultOpen={false}>
+            {/* Pricing controls */}
+            <Section title="Pricing Controls" defaultOpen={false}>
                 <Row>
                     <div style={{ flex: 1 }}>
-                        <Field label="Surge BPS (worsening)">
+                        <Field label="Scarcity Rate (BPS)">
                             <input type="number" value={surgeBps} onChange={(e) => setSurgeBps(e.target.value)} placeholder="250" />
                         </Field>
                     </div>
                     <div style={{ flex: 1 }}>
-                        <Field label="Bonus BPS (rebalancing)">
+                        <Field label="Incentive Rate (BPS)">
                             <input type="number" value={bonusBps} onChange={(e) => setBonusBps(e.target.value)} placeholder="150" />
                         </Field>
                     </div>
                 </Row>
-                <div style={{ display: "flex", gap: 8, marginBottom: poolConfig?.feePoolA !== "0" || poolConfig?.feePoolB !== "0" ? 10 : 0 }}>
-                    <button onClick={handleInitFeeConfig} style={{ flex: 1 }}>INIT FEE CONFIG</button>
+                <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={handleInitFeeConfig} style={{ flex: 1 }}>INIT PRICING</button>
                     <button onClick={handleUpdateFeeConfig} style={{ flex: 1 }}>UPDATE</button>
                 </div>
+            </Section>
+
+            {/* Revenue */}
+            <Section title="Revenue" defaultOpen={false}>
                 {poolConfig && (
                     <>
                         <div style={{
-                            fontSize: 11, padding: "10px 10px", marginTop: 10,
+                            fontSize: 11, padding: "10px 10px",
                             background: "var(--bg-input)", border: "1px solid var(--border)",
                             fontFamily: '"Frontier Disket Mono", monospace',
+                            marginBottom: 10,
                         }}>
                             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                                <span style={{ color: "var(--text-muted)" }}>Fee Pool {tokenAName}</span>
+                                <span style={{ color: "var(--text-muted)" }}>Revenue {tokenAName}</span>
                                 <span>{poolConfig.feePoolA}</span>
                             </div>
                             <div style={{ display: "flex", justifyContent: "space-between" }}>
-                                <span style={{ color: "var(--text-muted)" }}>Fee Pool {tokenBName}</span>
+                                <span style={{ color: "var(--text-muted)" }}>Revenue {tokenBName}</span>
                                 <span>{poolConfig.feePoolB}</span>
                             </div>
                         </div>
 
-                        <div style={{ marginTop: 10 }}>
+                        <div>
                             <div style={{ display: "flex", gap: 0, marginBottom: 8 }}>
                                 <button
                                     onClick={() => setFeeAction("withdraw")}
                                     style={{ flex: 1, ...(feeAction === "withdraw" ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}) }}
-                                >WITHDRAW</button>
+                                >COLLECT</button>
                                 <button
                                     onClick={() => setFeeAction("roll")}
                                     style={{ flex: 1, borderLeft: "none", ...(feeAction === "roll" ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}) }}
-                                >ROLL TO RESERVES</button>
+                                >REINVEST</button>
                             </div>
                             <div style={{ display: "flex", gap: 0, marginBottom: 8 }}>
                                 <button
@@ -369,10 +374,10 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
                             </div>
                             <div style={{ display: "flex", gap: 8 }}>
                                 <button onClick={() => handleFeeAction(typeIdA, tokenAName)} style={{ flex: 1 }}>
-                                    {feeAction === "withdraw" ? "WITHDRAW" : "ROLL"} {tokenAName}
+                                    {feeAction === "withdraw" ? "COLLECT" : "REINVEST"} {tokenAName}
                                 </button>
                                 <button onClick={() => handleFeeAction(typeIdB, tokenBName)} style={{ flex: 1 }}>
-                                    {feeAction === "withdraw" ? "WITHDRAW" : "ROLL"} {tokenBName}
+                                    {feeAction === "withdraw" ? "COLLECT" : "REINVEST"} {tokenBName}
                                 </button>
                             </div>
                         </div>
@@ -381,7 +386,7 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
             </Section>
 
             {/* Create pool — one-time action, collapsed by default */}
-            <Section title="Create Pool" defaultOpen={false}>
+            <Section title="Establish Market" defaultOpen={false}>
                 <Row>
                     <div style={{ flex: 1 }}>
                         <Field label="Token A ID"><input value={typeIdA} onChange={(e) => setTypeIdA(e.target.value)} /></Field>
@@ -407,20 +412,20 @@ export function AdminPanel({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
                     </div>
                 </Row>
                 <Field label="Banner"><input value={banner} onChange={(e) => setBanner(e.target.value)} /></Field>
-                <button onClick={handleCreatePool} className="primary" style={{ width: "100%", marginTop: 4 }}>CREATE POOL</button>
+                <button onClick={handleCreatePool} className="primary" style={{ width: "100%", marginTop: 4 }}>ESTABLISH MARKET</button>
             </Section>
 
             {/* Config — rarely changed */}
-            <Section title="Config" defaultOpen={false}>
+            <Section title="Terminal Config" defaultOpen={false}>
                 <Field label="AMM Package ID">
                     <input value={packageId} onChange={(e) => setPackageId(e.target.value)} placeholder="0x..." />
                 </Field>
-                <Field label="Pool ID">
+                <Field label="Market ID">
                     <input value={poolIdInput} onChange={(e) => setPoolIdInput(e.target.value)} placeholder="0x..." />
                 </Field>
                 <Row>
                     <div style={{ flex: 1 }}>
-                        <Field label="Pool ISV"><input value={poolIsvInput} onChange={(e) => setPoolIsvInput(e.target.value)} placeholder="ISV" /></Field>
+                        <Field label="Market ISV"><input value={poolIsvInput} onChange={(e) => setPoolIsvInput(e.target.value)} placeholder="ISV" /></Field>
                     </div>
                     <div style={{ flex: 1 }}>
                         <Field label="AdminCap ID"><input value={adminCapId} onChange={(e) => setAdminCapId(e.target.value)} placeholder="0x..." /></Field>
