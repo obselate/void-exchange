@@ -33,6 +33,7 @@ body {
   background: var(--bg);
   min-height: 100vh;
   overflow-x: hidden;
+  padding-bottom: 32px;
 }
 
 /* Animated background grid */
@@ -48,14 +49,20 @@ body::before {
   z-index: -1;
 }
 
-/* Subtle top-down gradient overlay */
+/* Scanline overlay */
 body::after {
   content: "";
   position: fixed;
   inset: 0;
-  background: radial-gradient(ellipse at 50% 0%, rgba(232, 122, 30, 0.04) 0%, transparent 60%);
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.15) 2px,
+    rgba(0, 0, 0, 0.15) 4px
+  );
   pointer-events: none;
-  z-index: -1;
+  z-index: 1000;
 }
 
 /* ═══════════ Panels ═══════════ */
@@ -386,3 +393,247 @@ td:first-child { color: var(--text-muted); text-transform: uppercase; font-size:
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ═══════════ Terminal Panels ═══════════ */
+.terminal-panel {
+  border: 1px solid rgba(232, 122, 30, 0.2);
+  padding: 20px;
+  margin-bottom: 20px;
+  position: relative;
+  background: rgba(10, 13, 18, 0.8);
+}
+
+.terminal-panel[data-label]::before {
+  content: attr(data-label);
+  position: absolute;
+  top: -9px;
+  left: 16px;
+  background: var(--bg);
+  padding: 0 8px;
+  font-family: "Frontier Disket Mono", "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 3px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.terminal-panel.cyan[data-label]::before {
+  color: var(--cyan);
+}
+
+.terminal-panel.cyan {
+  border-color: rgba(0, 212, 255, 0.2);
+  background: rgba(0, 212, 255, 0.02);
+}
+
+.terminal-panel.muted[data-label]::before {
+  color: #555;
+}
+
+.terminal-panel.muted {
+  border-color: rgba(232, 122, 30, 0.1);
+  background: rgba(10, 13, 18, 0.4);
+}
+
+/* ═══════════ Status Bar ═══════════ */
+.status-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #0a0d12;
+  border-top: 1px solid rgba(232, 122, 30, 0.2);
+  padding: 6px 24px;
+  display: flex;
+  justify-content: space-between;
+  font-family: "Frontier Disket Mono", "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: #444;
+  z-index: 100;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  margin-right: 6px;
+  box-shadow: 0 0 4px var(--green-glow);
+  vertical-align: middle;
+}
+
+.status-dot.disconnected {
+  background: #555;
+  box-shadow: none;
+}
+
+/* ═══════════ Blinking Cursor ═══════════ */
+.cursor-blink {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: var(--accent);
+  margin-left: 4px;
+  vertical-align: middle;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ═══════════ Supply Bar ═══════════ */
+.supply-bar {
+  height: 6px;
+  background: var(--bg-input);
+  overflow: hidden;
+  display: flex;
+  margin-bottom: 12px;
+}
+
+.supply-bar-a {
+  background: linear-gradient(90deg, var(--accent), var(--accent-bright));
+  transition: width 0.5s ease;
+}
+
+.supply-bar-b {
+  background: linear-gradient(90deg, var(--cyan), rgba(0, 212, 255, 0.5));
+  transition: width 0.5s ease;
+}
+
+/* ═══════════ Order Context ═══════════ */
+.order-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 11px;
+}
+
+.order-context.warning {
+  background: var(--red-dim);
+  border: 1px solid rgba(255, 51, 85, 0.2);
+  color: #ff6b7f;
+}
+
+.order-context.bonus {
+  background: var(--green-dim);
+  border: 1px solid rgba(0, 255, 136, 0.2);
+  color: var(--green);
+}
+
+/* ═══════════ Activity Feed ═══════════ */
+.activity-row {
+  display: flex;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 11px;
+  gap: 12px;
+}
+
+.activity-row + .activity-row {
+  border-top: 1px solid rgba(232, 122, 30, 0.05);
+}
+
+.activity-time {
+  color: #444;
+  font-size: 10px;
+  width: 48px;
+  flex-shrink: 0;
+}
+
+.activity-type {
+  font-weight: 700;
+  letter-spacing: 2px;
+  font-size: 10px;
+  width: 36px;
+  flex-shrink: 0;
+}
+
+.activity-type.sell { color: #ff6b7f; }
+.activity-type.buy { color: var(--green); }
+
+.activity-detail {
+  color: #888;
+  flex: 1;
+}
+
+.activity-detail strong {
+  color: var(--text-bright);
+  font-weight: 500;
+}
+
+.activity-bonus {
+  color: var(--green);
+  font-size: 10px;
+}
+
+/* ═══════════ Landing Page ═══════════ */
+.landing-title {
+  font-family: "Frontier Disket Mono", "JetBrains Mono", monospace;
+  font-size: 64px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 16px;
+  text-shadow: 0 0 40px rgba(232, 122, 30, 0.3), 0 0 80px rgba(232, 122, 30, 0.1);
+  text-align: center;
+}
+
+.landing-subtitle {
+  font-family: "Frontier Disket Mono", "JetBrains Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 8px;
+  color: #888;
+  text-transform: uppercase;
+  text-align: center;
+  margin-top: 4px;
+}
+
+.landing-line {
+  width: 200px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  margin: 16px auto 0;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 48px;
+}
+
+.feature-card {
+  border: 1px solid rgba(232, 122, 30, 0.15);
+  padding: 24px 16px;
+  text-align: center;
+  background: rgba(10, 13, 18, 0.6);
+  transition: border-color 0.3s ease;
+}
+
+.feature-card:hover {
+  border-color: rgba(232, 122, 30, 0.4);
+}
+
+.pricing-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 12px;
+  gap: 12px;
+}
+
+.pricing-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pricing-indicator.green { background: var(--green); box-shadow: 0 0 6px var(--green-glow); }
+.pricing-indicator.amber { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+.pricing-indicator.red { background: var(--red); box-shadow: 0 0 6px rgba(255, 51, 85, 0.4); }
