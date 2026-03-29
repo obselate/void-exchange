@@ -23,7 +23,7 @@ export function useAmmPool(poolId: string | null) {
             if (!poolId) return null;
             try {
                 // Get pool's initial shared version for transactions
-                const poolObj = await suiClient.getObject({ id: poolId });
+                const poolObj = await suiClient.getObject({ id: poolId, options: { showOwner: true } });
                 if (!poolObj.data) return null;
                 const owner = poolObj.data.owner as any;
                 const isv = owner?.Shared?.initial_shared_version;
