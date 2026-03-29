@@ -1,8 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { suiClient } from "./useDevInspect";
-import { SSU_OBJECT_ID } from "../config";
-import { blake2b } from "@noble/hashes/blake2";
-import { bytesToHex } from "@noble/hashes/utils";
+import { blake2b } from "@noble/hashes/blake2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 export type InventoryItem = {
     typeId: string;
@@ -33,22 +32,22 @@ function hexToBytes(hex: string): Uint8Array {
     return bytes;
 }
 
-export function useSsuInventory() {
+export function useSsuInventory(ssuId: string | null) {
     return useQuery({
-        queryKey: ["ssu-inventory", SSU_OBJECT_ID],
+        queryKey: ["ssu-inventory", ssuId],
         queryFn: async (): Promise<SsuInventory | null> => {
             try {
                 const ssu = await suiClient.getObject({
-                    id: SSU_OBJECT_ID,
+                    id: ssuId!,
                     options: { showContent: true },
                 });
                 const fields = (ssu.data?.content as any)?.fields;
                 if (!fields) return null;
 
                 const ownerCapId: string = fields.owner_cap_id;
-                const openKey = computeOpenStorageKey(SSU_OBJECT_ID);
+                const openKey = computeOpenStorageKey(ssuId!);
 
-                const dfList = await suiClient.getDynamicFields({ parentId: SSU_OBJECT_ID, limit: 50 });
+                const dfList = await suiClient.getDynamicFields({ parentId: ssuId!, limit: 50 });
 
                 const main: InventoryItem[] = [];
                 const open: InventoryItem[] = [];
@@ -58,7 +57,7 @@ export function useSsuInventory() {
                     if (df.name?.type !== "0x2::object::ID") continue;
 
                     const obj = await suiClient.getDynamicFieldObject({
-                        parentId: SSU_OBJECT_ID,
+                        parentId: ssuId!,
                         name: df.name,
                     });
 
@@ -66,7 +65,7 @@ export function useSsuInventory() {
                     if (!value?.items) continue;
 
                     const items = parseItems(value.items);
-                    const keyId: string = df.name.value;
+                    const keyId: string = df.name.value as string;
 
                     if (keyId === ownerCapId) {
                         main.push(...items);
@@ -83,6 +82,7 @@ export function useSsuInventory() {
                 return null;
             }
         },
+        enabled: !!ssuId,
         refetchInterval: 5_000,
         staleTime: 0,
     });
