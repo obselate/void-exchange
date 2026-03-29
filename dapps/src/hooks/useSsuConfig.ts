@@ -14,7 +14,7 @@ export type SsuConfig = {
 };
 
 async function resolveIsv(objectId: string): Promise<number> {
-    const obj = await suiClient.getObject({ id: objectId });
+    const obj = await suiClient.getObject({ id: objectId, options: { showOwner: true } });
     const owner = obj.data?.owner as any;
     const isv = owner?.Shared?.initial_shared_version;
     if (!isv) throw new Error(`Cannot resolve ISV for ${objectId}`);

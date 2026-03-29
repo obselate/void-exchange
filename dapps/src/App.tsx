@@ -28,7 +28,7 @@ function App() {
     const [showLanding, setShowLanding] = useState(() => !SSU_ID && !localStorage.getItem("void_exchange_visited"));
 
     // Resolve all SSU config from chain
-    const { data: ssuConfig, isLoading: ssuLoading } = useSsuConfig(SSU_ID);
+    const { data: ssuConfig, isLoading: ssuLoading, error: ssuError } = useSsuConfig(SSU_ID);
 
     // Use first discovered pool (future: pool selector)
     const activePoolId = ssuConfig?.poolIds?.[0] || localStorage.getItem("amm_pool_id") || "";
@@ -67,10 +67,13 @@ function App() {
                     <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
                         <div style={{
                             fontFamily: '"Frontier Disket Mono", monospace',
-                            fontSize: 12, color: "var(--accent)",
-                            letterSpacing: "0.1em", animation: "pulse 1.5s ease infinite",
+                            fontSize: 12, color: ssuError ? "var(--red)" : "var(--accent)",
+                            letterSpacing: "0.1em", animation: ssuError ? "none" : "pulse 1.5s ease infinite",
                         }}>
-                            // CONNECTING TO STATION...
+                            {ssuError
+                                ? `// ERROR: ${ssuError instanceof Error ? ssuError.message : "Failed to connect"}`
+                                : "// CONNECTING TO STATION..."
+                            }
                         </div>
                     </div>
                 </div>
