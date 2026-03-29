@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { suiClient } from "./useDevInspect";
-import { setPoolInfo } from "./useAmmTransactions";
 
 export type AmmPoolData = {
     reserveA: string;
@@ -20,7 +19,7 @@ export type AmmPoolData = {
 export function useAmmPool(poolId: string | null) {
     return useQuery({
         queryKey: ["amm-pool", poolId],
-        queryFn: async (): Promise<{ poolId: string; config: AmmPoolData } | null> => {
+        queryFn: async (): Promise<{ poolId: string; poolIsv: number; config: AmmPoolData } | null> => {
             if (!poolId) return null;
             try {
                 // Get pool's initial shared version for transactions
@@ -28,7 +27,6 @@ export function useAmmPool(poolId: string | null) {
                 if (!poolObj.data) return null;
                 const owner = poolObj.data.owner as any;
                 const isv = owner?.Shared?.initial_shared_version;
-                if (isv) setPoolInfo(poolId, Number(isv));
 
                 // Read dynamic fields
                 const dfList = await suiClient.getDynamicFields({ parentId: poolId });
@@ -58,6 +56,7 @@ export function useAmmPool(poolId: string | null) {
 
                 return {
                     poolId,
+                    poolIsv: Number(isv) || 0,
                     config: {
                         reserveA: configJson.reserve_a || "0",
                         reserveB: configJson.reserve_b || "0",
