@@ -1,16 +1,24 @@
 import { useState } from "react";
 import { useDAppKit, useCurrentAccount } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { buildCreatePoolTx, buildSeedTx, buildSetReservesTx, buildInitFeeConfigTx, buildUpdateFeeConfigTx, buildWithdrawFeesTx, buildRollFeesToReservesTx, setPoolInfo } from "../hooks/useAmmTransactions";
+import {
+    buildCreatePoolTx, buildSeedTx, buildSetReservesTx,
+    buildInitFeeConfigTx, buildUpdateFeeConfigTx,
+    buildWithdrawFeesTx, buildRollFeesToReservesTx,
+    type SsuContext, type PoolContext,
+} from "../hooks/useAmmTransactions";
 import { getAmmPackageId, setAmmPackageId, ITEM_NAMES } from "../config";
 import { useSsuInventory, InventoryItem } from "../hooks/useSsuInventory";
+import type { SsuConfig } from "../hooks/useSsuConfig";
 
 import { AmmPoolData } from "../hooks/useAmmPool";
 
 type Props = {
-    ssuOwnerCapId: string | null;
-    onPoolCreated: (poolId: string) => void;
-    poolConfig?: AmmPoolData | null;
+    ssuConfig: SsuConfig;
+    ssuCtx: SsuContext;
+    poolCtx: PoolContext;
+    poolConfig: AmmPoolData | null;
+    onPoolCreated: () => void;
 };
 
 function Section({ title, defaultOpen = true, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
@@ -69,7 +77,7 @@ function InvCol({ title, items }: { title: string; items: InventoryItem[] }) {
     );
 }
 
-export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) {
+export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreated }: Props) {
     const { signAndExecuteTransaction } = useDAppKit();
     const account = useCurrentAccount();
     const queryClient = useQueryClient();
@@ -108,13 +116,13 @@ export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
     const [feeAmountMode, setFeeAmountMode] = useState<"amount" | "pct">("pct");
     const [feeAmountVal, setFeeAmountVal] = useState("100");
 
-    const { data: inventory } = useSsuInventory();
+    const { data: inventory } = useSsuInventory(ssuConfig.ssuId);
 
     const handleInitFeeConfig = async () => {
         if (!adminCapId) { setError("Set AdminCap ID first"); return; }
         setStatus("Initializing fee config..."); setError(null);
         try {
-            const tx = buildInitFeeConfigTx({ adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) });
+            const tx = buildInitFeeConfigTx(poolCtx, { adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) });
             await signAndExecuteTransaction({ transaction: tx });
             setStatus("Fee config initialized!");
             queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
@@ -143,8 +151,8 @@ export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
         setStatus(`${actionLabel} ${amount} ${label} fees...`); setError(null);
         try {
             const tx = feeAction === "withdraw"
-                ? buildWithdrawFeesTx({ adminCapId, typeId: BigInt(typeId), amount })
-                : buildRollFeesToReservesTx({ adminCapId, typeId: BigInt(typeId), amount });
+                ? buildWithdrawFeesTx(poolCtx, ssuCtx, { adminCapId, typeId: BigInt(typeId), amount })
+                : buildRollFeesToReservesTx(poolCtx, { adminCapId, typeId: BigInt(typeId), amount });
             await signAndExecuteTransaction({ transaction: tx });
             setStatus(`${feeAction === "withdraw" ? "Withdrawn" : "Rolled"} ${amount} ${label}`);
             queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] });
@@ -158,7 +166,7 @@ export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
         if (!adminCapId) { setError("Set AdminCap ID first"); return; }
         setStatus("Updating fee config..."); setError(null);
         try {
-            const tx = buildUpdateFeeConfigTx({ adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) });
+            const tx = buildUpdateFeeConfigTx(poolCtx, { adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) });
             await signAndExecuteTransaction({ transaction: tx });
             setStatus("Fee config updated!");
             queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
@@ -169,7 +177,6 @@ export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
 
     const saveConfig = () => {
         if (poolIdInput && poolIsvInput) {
-            setPoolInfo(poolIdInput, Number(poolIsvInput));
             localStorage.setItem("amm_pool_id", poolIdInput);
             localStorage.setItem("amm_pool_isv", poolIsvInput);
         }
@@ -183,7 +190,7 @@ export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
         if (!sender) { setError("Wallet not connected"); return; }
         setStatus("Creating pool..."); setError(null);
         try {
-            const tx = buildCreatePoolTx({
+            const tx = buildCreatePoolTx(ssuCtx, {
                 typeIdA: BigInt(typeIdA), typeIdB: BigInt(typeIdB),
                 reserveA: BigInt(initReserveA), reserveB: BigInt(initReserveB),
                 amp: BigInt(amp), feeBps: BigInt(feeBps), banner, sender,
@@ -200,7 +207,7 @@ export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
         if (!amount || Number(amount) <= 0) { setError("Enter a seed amount"); return; }
         setStatus(`Seeding ${label}...`); setError(null);
         try {
-            const tx = buildSeedTx({ adminCapId, typeId: BigInt(typeId), amount: Number(amount) });
+            const tx = buildSeedTx(poolCtx, ssuCtx, { adminCapId, typeId: BigInt(typeId), amount: Number(amount) });
             await signAndExecuteTransaction({ transaction: tx });
             setStatus(`${label} seeded: ${amount}`);
             queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] });
@@ -214,7 +221,7 @@ export function StationOps({ ssuOwnerCapId, onPoolCreated, poolConfig }: Props) 
         if (!setResA || !setResB) { setError("Enter both reserve values"); return; }
         setStatus("Setting reserves..."); setError(null);
         try {
-            const tx = buildSetReservesTx({ adminCapId, reserveA: BigInt(setResA), reserveB: BigInt(setResB) });
+            const tx = buildSetReservesTx(poolCtx, { adminCapId, reserveA: BigInt(setResA), reserveB: BigInt(setResB) });
             await signAndExecuteTransaction({ transaction: tx });
             setStatus(`Reserves set: ${setResA} / ${setResB}`);
             queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] });

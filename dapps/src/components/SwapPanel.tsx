@@ -3,8 +3,7 @@ import { useDAppKit } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAmmQuote } from "../hooks/useAmmQuote";
 import { AmmPoolData } from "../hooks/useAmmPool";
-import { buildSwapTx } from "../hooks/useAmmTransactions";
-import { SSU_OBJECT_ID } from "../config";
+import { buildSwapTx, type SsuContext, type PoolContext } from "../hooks/useAmmTransactions";
 import type { SsuInventory } from "../hooks/useSsuInventory";
 import { MarketStatus } from "./MarketStatus";
 import { RecentActivity } from "./RecentActivity";
@@ -12,6 +11,8 @@ import { RecentActivity } from "./RecentActivity";
 type Props = {
     poolId: string;
     poolConfig: AmmPoolData;
+    poolCtx: PoolContext;
+    ssuCtx: SsuContext;
     tokenALabel: string;
     tokenBLabel: string;
     onSwapComplete: () => void;
@@ -20,6 +21,8 @@ type Props = {
 export function SwapPanel({
     poolId,
     poolConfig,
+    poolCtx,
+    ssuCtx,
     tokenALabel,
     tokenBLabel,
     onSwapComplete,
@@ -49,7 +52,7 @@ export function SwapPanel({
         setPendingWithdraw(null);
         try {
             const minOut = (quote.totalOutput * 99n) / 100n;
-            const tx = buildSwapTx({ typeIdIn, amountIn, minOut });
+            const tx = buildSwapTx(poolCtx, ssuCtx, { typeIdIn, amountIn, minOut });
             await signAndExecuteTransaction({ transaction: tx });
             setPendingWithdraw({ amount: quote.totalOutput.toString(), token: outLabel });
             setAmountStr("");
@@ -58,7 +61,7 @@ export function SwapPanel({
             // Optimistically update inventory: input left main, output arrived in main
             const typeIdOut = BigInt(direction === "a_for_b" ? poolConfig.typeIdB : poolConfig.typeIdA);
             queryClient.setQueryData<SsuInventory | null>(
-                ["ssu-inventory", SSU_OBJECT_ID],
+                ["ssu-inventory", ssuCtx.ssuId],
                 (old) => {
                     if (!old) return old;
                     const mainItems = old.main.map((item) => {
@@ -96,7 +99,7 @@ export function SwapPanel({
 
             <div className="terminal-panel" data-label="Place Order">
                 {/* Direction toggle */}
-                <div className="direction-toggle" style={{ marginBottom: 20 }}>
+                <div className="direction-toggle" style={{ marginBottom: 12 }}>
                     <button
                         className={direction === "a_for_b" ? "active" : ""}
                         onClick={() => setDirection("a_for_b")}
@@ -111,14 +114,8 @@ export function SwapPanel({
                     </button>
                 </div>
 
-                {/* Labels */}
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                    <span className="label">SELL <span style={{ color: "var(--text-bright)" }}>{inLabel}</span></span>
-                    <span className="label">BUY <span style={{ color: "var(--text-bright)" }}>{outLabel}</span></span>
-                </div>
-
                 {/* Amount input */}
-                <div style={{ display: "flex", gap: 0, marginBottom: 20 }}>
+                <div style={{ display: "flex", gap: 0, marginBottom: 14 }}>
                     <input
                         className="input-lg"
                         type="number" min="1"
@@ -139,7 +136,7 @@ export function SwapPanel({
                 {amountIn > 0n && quote && (
                     <div style={{
                         border: "1px solid rgba(232, 122, 30, 0.1)",
-                        padding: 16, marginBottom: 16,
+                        padding: 12, marginBottom: 12,
                         background: "rgba(10, 13, 18, 0.6)",
                     }}>
                         <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
