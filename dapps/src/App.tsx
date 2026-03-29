@@ -1,16 +1,18 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useConnection } from "@evefrontier/dapp-kit";
-import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
+import { useCurrentAccount } from "@mysten/dapp-kit-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { SwapPanel } from "./components/SwapPanel";
 import { StationOps } from "./components/StationOps";
 import { StatusBar } from "./components/StatusBar";
 import { LandingPage } from "./components/LandingPage";
+import { SetupWizard } from "./components/SetupWizard";
 import { useAmmPool } from "./hooks/useAmmPool";
+import { useSsuConfig } from "./hooks/useSsuConfig";
 import { ITEM_NAMES } from "./config";
-import { buildAuthorizeTx } from "./hooks/useAmmTransactions";
 
-const DEFAULT_POOL_ID = localStorage.getItem("amm_pool_id") || "";
-const SSU_OWNER_CAP_ID = "0x8b0924695b7fe74f06fb1e7bb1276dc6385e6506e3b9a771f1213fef8247be70";
+// Parse SSU ID from URL: ?ssu=0xABC...
+const SSU_ID = new URLSearchParams(window.location.search).get("ssu");
 const IS_OPS = new URLSearchParams(window.location.search).has("ops")
     || new URLSearchParams(window.location.search).has("admin");
 
@@ -20,53 +22,114 @@ function itemName(typeId: string): string {
 
 function App() {
     const { handleConnect, handleDisconnect } = useConnection();
-    const { signAndExecuteTransaction } = useDAppKit();
     const account = useCurrentAccount();
+    const queryClient = useQueryClient();
 
-    const [poolId, setPoolId] = useState<string>(DEFAULT_POOL_ID);
-    const [authStatus, setAuthStatus] = useState<string | null>(null);
-    const { data: pool, refetch: refetchPool } = useAmmPool(poolId || null);
+    const [showLanding, setShowLanding] = useState(() => !SSU_ID && !localStorage.getItem("void_exchange_visited"));
 
-    const handleAuthorize = async () => {
-        setAuthStatus("Authorizing...");
-        try {
-            const tx = await buildAuthorizeTx(SSU_OWNER_CAP_ID);
-            await signAndExecuteTransaction({ transaction: tx });
-            setAuthStatus("Authorized!");
-        } catch (e) {
-            setAuthStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
-        }
+    // Resolve all SSU config from chain
+    const { data: ssuConfig, isLoading: ssuLoading } = useSsuConfig(SSU_ID);
+
+    // Use first discovered pool (future: pool selector)
+    const activePoolId = ssuConfig?.poolIds?.[0] || localStorage.getItem("amm_pool_id") || "";
+    const { data: pool, refetch: refetchPool } = useAmmPool(activePoolId || null);
+
+    const handleEnterTerminal = () => {
+        localStorage.setItem("void_exchange_visited", "1");
+        setShowLanding(false);
+        if (!account) handleConnect();
     };
 
-    const handlePoolCreated = (id: string) => {
-        setPoolId(id);
-        localStorage.setItem("amm_pool_id", id);
-    };
+    const handleWizardComplete = useCallback(() => {
+        // Refetch SSU config to pick up the new pool
+        queryClient.invalidateQueries({ queryKey: ["ssu-config"] });
+        queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
+    }, [queryClient]);
 
-    if (!account) {
+    // No SSU ID in URL → landing page
+    if (!SSU_ID || showLanding || !account) {
         return (
             <>
-                <LandingPage onConnect={handleConnect} />
+                <LandingPage onConnect={handleEnterTerminal} />
                 <StatusBar />
             </>
         );
     }
 
+    // SSU ID present but still loading config
+    if (ssuLoading || !ssuConfig) {
+        return (
+            <>
+                <div style={{ padding: "12px 10px", maxWidth: 540, margin: "0 auto" }}>
+                    <div className="header">
+                        <h1 style={{ fontSize: 13, letterSpacing: "4px" }}>VOID EXCHANGE</h1>
+                    </div>
+                    <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
+                        <div style={{
+                            fontFamily: '"Frontier Disket Mono", monospace',
+                            fontSize: 12, color: "var(--accent)",
+                            letterSpacing: "0.1em", animation: "pulse 1.5s ease infinite",
+                        }}>
+                            // CONNECTING TO STATION...
+                        </div>
+                    </div>
+                </div>
+                <StatusBar />
+            </>
+        );
+    }
+
+    // No pool exists
+    if (!activePoolId || !pool) {
+        // Owner → show wizard
+        if (ssuConfig.isOwner) {
+            return (
+                <>
+                    <SetupWizard ssuConfig={ssuConfig} onComplete={handleWizardComplete} />
+                    <StatusBar />
+                </>
+            );
+        }
+        // Trader → no market message
+        return (
+            <>
+                <div style={{ padding: "12px 10px", maxWidth: 540, margin: "0 auto" }}>
+                    <div className="header">
+                        <h1 style={{ fontSize: 13, letterSpacing: "4px" }}>VOID EXCHANGE</h1>
+                    </div>
+                    <div className="terminal-panel" data-label="Market Terminal" style={{ textAlign: "center", padding: "40px 20px" }}>
+                        <div style={{
+                            fontFamily: '"Frontier Disket Mono", monospace',
+                            fontSize: 12, color: "var(--text-muted)", letterSpacing: "0.1em",
+                        }}>
+                            NO MARKET AT THIS STATION
+                        </div>
+                        <div style={{ fontSize: 11, color: "#555", marginTop: 8 }}>
+                            The station owner has not deployed a market yet.
+                        </div>
+                    </div>
+                </div>
+                <StatusBar />
+            </>
+        );
+    }
+
+    // Pool exists → trading UI
+    const ssuCtx = {
+        ssuId: ssuConfig.ssuId,
+        ssuIsv: ssuConfig.ssuIsv,
+        characterId: ssuConfig.characterId,
+        characterIsv: ssuConfig.characterIsv,
+    };
+    const poolCtx = { poolId: activePoolId, poolIsv: pool.poolIsv };
+
     return (
         <>
-            <div style={{ padding: "24px 16px", maxWidth: 500, margin: "0 auto" }}>
+            <div style={{ padding: "12px 10px", maxWidth: 540, margin: "0 auto" }}>
                 {/* Header */}
                 <div className="header">
                     <h1 style={{ fontSize: 13, letterSpacing: "4px" }}>VOID EXCHANGE</h1>
                     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                        {poolId && pool && (
-                            <span style={{
-                                fontFamily: '"Frontier Disket Mono", monospace',
-                                fontSize: 11, color: "#888", letterSpacing: "2px",
-                            }}>
-                                {pool.config.banner || "MARKET"}
-                            </span>
-                        )}
                         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <span style={{
                                 width: 6, height: 6, borderRadius: "50%",
@@ -83,48 +146,26 @@ function App() {
                     </div>
                 </div>
 
-                {poolId && pool ? (
-                    <SwapPanel
-                        poolId={poolId}
-                        poolConfig={pool.config}
-                        tokenALabel={itemName(pool.config.typeIdA)}
-                        tokenBLabel={itemName(pool.config.typeIdB)}
-                        onSwapComplete={() => refetchPool()}
-                    />
-                ) : poolId ? (
-                    <div className="panel" style={{ textAlign: "center", padding: "40px 20px" }}>
-                        <div style={{
-                            fontFamily: '"Frontier Disket Mono", monospace',
-                            fontSize: 12, color: "var(--accent)",
-                            letterSpacing: "0.1em", animation: "pulse 1.5s ease infinite",
-                        }}>
-                            // LOADING MARKET DATA...
-                        </div>
-                    </div>
-                ) : (
-                    <div className="terminal-panel" data-label="Market Terminal" style={{ textAlign: "center", padding: "40px 20px" }}>
-                        <div style={{
-                            fontFamily: '"Frontier Disket Mono", monospace',
-                            fontSize: 12, color: "var(--text-muted)", letterSpacing: "0.1em",
-                        }}>
-                            NO ACTIVE MARKET
-                        </div>
-                        <div style={{ fontSize: 11, color: "#555", marginTop: 8 }}>
-                            Configure a Market ID in Station Operations, or establish a new market at your SSU.
-                        </div>
-                    </div>
-                )}
+                <SwapPanel
+                    poolId={activePoolId}
+                    poolConfig={pool.config}
+                    poolCtx={poolCtx}
+                    ssuCtx={ssuCtx}
+                    tokenALabel={itemName(pool.config.typeIdA)}
+                    tokenBLabel={itemName(pool.config.typeIdB)}
+                    onSwapComplete={() => refetchPool()}
+                />
 
-                {IS_OPS && (
+                {IS_OPS && ssuConfig.isOwner && (
                     <>
                         <div className="divider" />
-                        <button onClick={handleAuthorize} style={{
-                            width: "100%", marginBottom: 12,
-                            borderColor: authStatus?.startsWith("Error") ? "var(--red)" : undefined,
-                        }}>
-                            {authStatus || "AUTHORIZE MARKET"}
-                        </button>
-                        <StationOps ssuOwnerCapId={SSU_OWNER_CAP_ID} onPoolCreated={handlePoolCreated} poolConfig={pool?.config} />
+                        <StationOps
+                            ssuConfig={ssuConfig}
+                            ssuCtx={ssuCtx}
+                            poolCtx={poolCtx}
+                            poolConfig={pool.config}
+                            onPoolCreated={() => handleWizardComplete()}
+                        />
                     </>
                 )}
             </div>
