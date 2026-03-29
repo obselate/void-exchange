@@ -6,13 +6,14 @@ import { AmmPoolData } from "../hooks/useAmmPool";
 import { buildSwapTx } from "../hooks/useAmmTransactions";
 import { SSU_OBJECT_ID } from "../config";
 import type { SsuInventory } from "../hooks/useSsuInventory";
+import { MarketStatus } from "./MarketStatus";
+import { RecentActivity } from "./RecentActivity";
 
 type Props = {
     poolId: string;
     poolConfig: AmmPoolData;
     tokenALabel: string;
     tokenBLabel: string;
-    banner: string;
     onSwapComplete: () => void;
 };
 
@@ -21,7 +22,6 @@ export function SwapPanel({
     poolConfig,
     tokenALabel,
     tokenBLabel,
-    banner,
     onSwapComplete,
 }: Props) {
     const [direction, setDirection] = useState<"a_for_b" | "b_for_a">("a_for_b");
@@ -90,134 +90,35 @@ export function SwapPanel({
         }
     };
 
-    const resA = Number(poolConfig.reserveA);
-    const resB = Number(poolConfig.reserveB);
-    const rate = amountIn > 0n && quote
-        ? (Math.floor(Number(quote.totalOutput) * 1000 / Number(amountIn)) / 1000).toFixed(3)
-        : null;
-
-    // Determine which direction is incentivized
-    const aIsAbundant = resA > resB;
-    const isBalanced = resA === resB;
-
-    // Compute live fee/bonus rates for each direction
-    const total = resA + resB;
-    const diff = Math.abs(resA - resB);
-    const imbalanceBps = total > 0 ? Math.floor(diff * 10000 / total) : 0;
-    const baseFee = Number(poolConfig.feeBps);
-    const surgeBps = Number(poolConfig.surgeBps);
-    const bonusBps = Number(poolConfig.bonusBps);
-
-    // A→B: selling A. Worsening if A is abundant (resA >= resB)
-    const aToB_worsening = resA >= resB;
-    const aToB_fee = aToB_worsening ? baseFee + Math.floor(imbalanceBps * surgeBps / 10000) : baseFee;
-    const aToB_bonus = !aToB_worsening ? Math.floor(imbalanceBps * bonusBps / 10000) : 0;
-
-    // B→A: selling B. Worsening if B is abundant (resB >= resA)
-    const bToA_worsening = resB >= resA;
-    const bToA_fee = bToA_worsening ? baseFee + Math.floor(imbalanceBps * surgeBps / 10000) : baseFee;
-    const bToA_bonus = !bToA_worsening ? Math.floor(imbalanceBps * bonusBps / 10000) : 0;
-
     return (
-        <div className="panel">
-            {/* Dynamic rate cards */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                <div style={{
-                    flex: 1, padding: "10px 12px",
-                    background: aToB_bonus > 0 ? "var(--green-dim)" : aToB_worsening && !isBalanced ? "var(--red-dim)" : "var(--bg-input)",
-                    border: `1px solid ${aToB_bonus > 0 ? "var(--green-glow)" : "var(--border)"}`,
-                }}>
-                    <div className="label" style={{ marginBottom: 4 }}>{tokenALabel} &rarr; {tokenBLabel}</div>
-                    <div style={{
-                        fontFamily: '"Frontier Disket Mono", monospace', fontSize: 14, fontWeight: 700,
-                        color: aToB_bonus > 0 ? "var(--green)" : "var(--text-bright)",
-                    }}>
-                        {aToB_bonus > 0
-                            ? `+${(aToB_bonus / 100).toFixed(2)}% BONUS`
-                            : `${(aToB_fee / 100).toFixed(2)}% FEE`
-                        }
-                    </div>
-                </div>
-                <div style={{
-                    flex: 1, padding: "10px 12px",
-                    background: bToA_bonus > 0 ? "var(--green-dim)" : bToA_worsening && !isBalanced ? "var(--red-dim)" : "var(--bg-input)",
-                    border: `1px solid ${bToA_bonus > 0 ? "var(--green-glow)" : "var(--border)"}`,
-                }}>
-                    <div className="label" style={{ marginBottom: 4 }}>{tokenBLabel} &rarr; {tokenALabel}</div>
-                    <div style={{
-                        fontFamily: '"Frontier Disket Mono", monospace', fontSize: 14, fontWeight: 700,
-                        color: bToA_bonus > 0 ? "var(--green)" : "var(--text-bright)",
-                    }}>
-                        {bToA_bonus > 0
-                            ? `+${(bToA_bonus / 100).toFixed(2)}% BONUS`
-                            : `${(bToA_fee / 100).toFixed(2)}% FEE`
-                        }
-                    </div>
-                </div>
-            </div>
+        <>
+            <MarketStatus poolConfig={poolConfig} />
 
-            {/* Liquidity bar */}
-            <div style={{
-                display: "flex", gap: 1, marginBottom: 20, height: 4,
-                background: "var(--bg-input)", overflow: "hidden",
-            }}>
-                <div style={{
-                    width: `${resA / (resA + resB) * 100}%`,
-                    background: "linear-gradient(90deg, var(--accent), var(--accent-bright))",
-                    transition: "width 0.5s ease",
-                }} />
-                <div style={{
-                    flex: 1,
-                    background: "linear-gradient(90deg, var(--cyan), rgba(0, 212, 255, 0.5))",
-                    transition: "width 0.5s ease",
-                }} />
-            </div>
-
-            {/* Reserves display */}
-            <div style={{
-                display: "flex", justifyContent: "space-between", marginBottom: 20,
-                padding: "12px 14px", background: "var(--bg-input)", border: "1px solid var(--border)",
-            }}>
-                <div>
-                    <div className="label" style={{ color: "var(--accent)", marginBottom: 2 }}>{tokenALabel}</div>
-                    <div style={{
-                        fontFamily: '"Frontier Disket Mono", monospace',
-                        fontSize: 18, fontWeight: 700, color: "var(--text-bright)",
-                    }}>{resA.toLocaleString()}</div>
+            <div className="terminal-panel" data-label="Place Order">
+                {/* Direction toggle */}
+                <div className="direction-toggle" style={{ marginBottom: 20 }}>
+                    <button
+                        className={direction === "a_for_b" ? "active" : ""}
+                        onClick={() => setDirection("a_for_b")}
+                    >
+                        SELL {tokenALabel}
+                    </button>
+                    <button
+                        className={direction === "b_for_a" ? "active" : ""}
+                        onClick={() => setDirection("b_for_a")}
+                    >
+                        SELL {tokenBLabel}
+                    </button>
                 </div>
-                <div style={{
-                    display: "flex", alignItems: "center",
-                    color: "var(--text-muted)", fontSize: 16, padding: "0 12px",
-                }}>/</div>
-                <div style={{ textAlign: "right" }}>
-                    <div className="label" style={{ color: "var(--cyan)", marginBottom: 2 }}>{tokenBLabel}</div>
-                    <div style={{
-                        fontFamily: '"Frontier Disket Mono", monospace',
-                        fontSize: 18, fontWeight: 700, color: "var(--text-bright)",
-                    }}>{resB.toLocaleString()}</div>
+
+                {/* Labels */}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span className="label">SELL <span style={{ color: "var(--text-bright)" }}>{inLabel}</span></span>
+                    <span className="label">BUY <span style={{ color: "var(--text-bright)" }}>{outLabel}</span></span>
                 </div>
-            </div>
 
-            {/* Direction toggle */}
-            <div className="direction-toggle">
-                <button
-                    className={direction === "a_for_b" ? "active" : ""}
-                    onClick={() => setDirection("a_for_b")}
-                >
-                    {tokenALabel} &rarr; {tokenBLabel}
-                </button>
-                <button
-                    className={direction === "b_for_a" ? "active" : ""}
-                    onClick={() => setDirection("b_for_a")}
-                >
-                    {tokenBLabel} &rarr; {tokenALabel}
-                </button>
-            </div>
-
-            {/* Amount input */}
-            <div style={{ marginBottom: 16 }}>
-                <div className="label">Deposit {inLabel}</div>
-                <div style={{ display: "flex", gap: 0 }}>
+                {/* Amount input */}
+                <div style={{ display: "flex", gap: 0, marginBottom: 20 }}>
                     <input
                         className="input-lg"
                         type="number" min="1"
@@ -228,101 +129,108 @@ export function SwapPanel({
                     />
                     {quote && quote.maxInput > 0n && (
                         <button onClick={() => setAmountStr(quote.maxInput.toString())}
-                            style={{
-                                whiteSpace: "nowrap", padding: "14px 16px",
-                                borderLeft: "1px solid var(--border)",
-                                fontSize: 11,
-                            }}>
+                            style={{ whiteSpace: "nowrap", padding: "14px 16px", fontSize: 11 }}>
                             MAX
                         </button>
                     )}
                 </div>
-            </div>
 
-            {/* Quote output */}
-            {amountIn > 0n && quote && (
-                <div style={{
-                    marginBottom: 16, padding: "14px",
-                    background: quote.isRebalancing ? "var(--green-dim)" : "var(--accent-dim)",
-                    border: `1px solid ${quote.isRebalancing ? "var(--green-glow)" : "var(--border-glow)"}`,
-                    animation: "fadeIn 0.2s ease",
-                }}>
+                {/* Order Preview */}
+                {amountIn > 0n && quote && (
                     <div style={{
-                        display: "flex", justifyContent: "space-between", alignItems: "baseline",
-                        marginBottom: 8,
+                        border: "1px solid rgba(232, 122, 30, 0.1)",
+                        padding: 16, marginBottom: 16,
+                        background: "rgba(10, 13, 18, 0.6)",
                     }}>
-                        <div className="label" style={{ marginBottom: 0 }}>You receive</div>
-                        <div style={{
-                            fontFamily: '"Frontier Disket Mono", monospace',
-                            fontSize: 22, fontWeight: 700,
-                            color: quote.isRebalancing ? "var(--green)" : "var(--accent-bright)",
-                            textShadow: quote.isRebalancing ? "0 0 20px var(--green-glow)" : "0 0 20px var(--accent-glow)",
-                        }}>
-                            {quote.totalOutput.toString()}{" "}
-                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{outLabel}</span>
+                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
+                            <span style={{ color: "#666" }}>You send</span>
+                            <span style={{ color: "var(--text-bright)", fontWeight: 500 }}>{amountIn.toString()} {inLabel}</span>
+                        </div>
+                        <div style={{ height: 1, background: "rgba(232, 122, 30, 0.1)", margin: "8px 0" }} />
+                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
+                            <span style={{ color: "#666" }}>You receive</span>
+                            <span style={{
+                                color: "#fff", fontWeight: 500, fontSize: 16,
+                                fontFamily: '"Frontier Disket Mono", monospace',
+                            }}>{quote.totalOutput.toString()} {outLabel}</span>
+                        </div>
+                        <div style={{ height: 1, background: "rgba(232, 122, 30, 0.1)", margin: "8px 0" }} />
+                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
+                            <span style={{ color: "#666" }}>Tx Tax</span>
+                            <span style={{ color: "var(--text-bright)", fontWeight: 500 }}>
+                                {quote.feeAmount.toString()} ({(Number(quote.effectiveFeeBps) / 100).toFixed(1)}%)
+                            </span>
+                        </div>
+                        {!quote.isRebalancing && quote.effectiveFeeBps > BigInt(poolConfig.feeBps) && (
+                            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
+                                <span style={{ color: "#666" }}>Scarcity Surcharge</span>
+                                <span style={{ color: "var(--red)", fontWeight: 500 }}>
+                                    +{(Number(quote.effectiveFeeBps - BigInt(poolConfig.feeBps)) / 100).toFixed(1)}%
+                                </span>
+                            </div>
+                        )}
+                        {quote.bonus > 0n && (
+                            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
+                                <span style={{ color: "#666" }}>Supply Incentive</span>
+                                <span style={{ color: "var(--green)", fontWeight: 500 }}>+{quote.bonus.toString()} {outLabel}</span>
+                            </div>
+                        )}
+                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
+                            <span style={{ color: "#666" }}>Market Impact</span>
+                            <span style={{ color: "var(--text-bright)", fontWeight: 500 }}>
+                                {(Number(quote.priceImpactBps) / 100).toFixed(1)}%
+                            </span>
                         </div>
                     </div>
+                )}
 
-                    {/* Bonus breakdown */}
-                    {quote.bonus > 0n && (
-                        <div style={{
-                            marginBottom: 8, padding: "6px 10px",
-                            background: "rgba(0, 255, 136, 0.06)",
-                            border: "1px solid rgba(0, 255, 136, 0.15)",
-                            fontSize: 11, fontFamily: '"Frontier Disket Mono", monospace',
-                            display: "flex", justifyContent: "space-between",
-                            color: "var(--green)",
-                        }}>
-                            <span>REBALANCE BONUS</span>
-                            <span>+{quote.bonus.toString()} {outLabel}</span>
-                        </div>
-                    )}
-
-                    <div style={{
-                        display: "flex", justifyContent: "space-between",
-                        fontSize: 11, color: "var(--text-muted)",
-                        fontFamily: '"Frontier Disket Mono", monospace',
-                    }}>
+                {/* Context message */}
+                {amountIn > 0n && quote && (
+                    <div className={`order-context ${quote.isRebalancing ? "bonus" : "warning"}`}>
+                        <span style={{ fontSize: 14, flexShrink: 0 }}>{quote.isRebalancing ? "+" : "!"}</span>
                         <span>
-                            Fee: {quote.feeAmount.toString()} {inLabel}{" "}
-                            ({(Number(quote.effectiveFeeBps) / 100).toFixed(2)}%)
+                            {quote.isRebalancing
+                                ? "This trade restores balance. Supply incentive earned."
+                                : "This trade increases imbalance. Scarcity surcharge applied."
+                            }
                         </span>
-                        <span>Rate: 1:{rate}</span>
                     </div>
-                </div>
-            )}
+                )}
 
-            {/* Steps */}
-            <div className="steps">
-                1. Deposit {inLabel} into this SSU from your ship<br />
-                2. Execute trade below<br />
-                3. Withdraw {outLabel} from this SSU to your ship
+                {/* Steps */}
+                <div className="steps">
+                    1. Deposit {inLabel} into this SSU from your ship<br />
+                    2. Execute trade below<br />
+                    3. Withdraw {outLabel} from this SSU to your ship
+                </div>
+
+                {/* Execute button */}
+                <button
+                    className="primary"
+                    onClick={handleSwap}
+                    disabled={submitting || !quote || amountIn <= 0n}
+                    style={{ width: "100%", padding: "14px 16px", fontSize: 13 }}
+                >
+                    {submitting ? "EXECUTING..." : `\u25C6 EXECUTE TRADE`}
+                </button>
+
+                {error && <div className="error">{error}</div>}
+
+                {pendingWithdraw && (
+                    <div className="withdraw-notice">
+                        <div className="title">// Order executed</div>
+                        <div className="amount">
+                            +{pendingWithdraw.amount} {pendingWithdraw.token}
+                        </div>
+                        <div className="sub">Withdraw from this SSU to your ship cargo</div>
+                        <button onClick={() => setPendingWithdraw(null)} style={{ width: "100%" }}>
+                            CONFIRM
+                        </button>
+                    </div>
+                )}
             </div>
 
-            {/* Execute button */}
-            <button
-                className="primary"
-                onClick={handleSwap}
-                disabled={submitting || !quote || amountIn <= 0n}
-                style={{ width: "100%", padding: "14px 16px", fontSize: 13 }}
-            >
-                {submitting ? "EXECUTING TRADE..." : `TRADE ${inLabel} \u2192 ${outLabel}`}
-            </button>
-
-            {error && <div className="error">{error}</div>}
-
-            {pendingWithdraw && (
-                <div className="withdraw-notice">
-                    <div className="title">// Trade executed</div>
-                    <div className="amount">
-                        +{pendingWithdraw.amount} {pendingWithdraw.token}
-                    </div>
-                    <div className="sub">Withdraw from this SSU to your ship cargo</div>
-                    <button onClick={() => setPendingWithdraw(null)} style={{ width: "100%" }}>
-                        CONFIRM
-                    </button>
-                </div>
-            )}
-        </div>
+            <RecentActivity poolId={poolId} typeIdA={poolConfig.typeIdA} typeIdB={poolConfig.typeIdB} />
+        </>
     );
 }

@@ -75,7 +75,6 @@ function App() {
                         poolConfig={pool.config}
                         tokenALabel={itemName(pool.config.typeIdA)}
                         tokenBLabel={itemName(pool.config.typeIdB)}
-                        banner={pool.config.banner}
                         onSwapComplete={() => refetchPool()}
                     />
                 ) : poolId ? (
