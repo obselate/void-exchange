@@ -38,10 +38,26 @@ export const MODULES = {
 /** Short item names by type_id. Expand as new items appear in EVE Frontier. */
 export const ITEM_NAMES: Record<string, string> = {
     "4": "Fuel",
-    "77800": "Feldspar",
+    "77800": "Feldspar Crystals",
     "77810": "Platinum",
-    "77811": "Hydrated Sulfied Matrix",
+    "77811": "Hydrated Sulfide",
+    "77818": "Unstable Fuel",
+    "78423": "Water Ice",
+    "78446": "Methane Ice",
+    "81846": "Sojourn",
+    "83463": "Synthetic Mining",
+    "83818": "Fossilized Exotronics",
+    "84182": "Reinforced Alloys",
+    "84210": "Carbon Weave",
+    "88234": "Troilite Sulfide",
     "88335": "D1 Fuel",
+    "88561": "Thermal Composites",
+    "88764": "Salvaged Material",
+    "89258": "Hydrocarbon",
+    "89259": "Silica Grains",
+    "89260": "Iron-Rich Nodules",
+    "91496": "Feral Trace",
+    "99001": "Palladium",
 };
 
 export function itemName(typeId: string): string {
