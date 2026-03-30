@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAmmQuote } from "../hooks/useAmmQuote";
 import { AmmPoolData } from "../hooks/useAmmPool";
 import { buildSwapTx, type SsuContext, type PoolContext } from "../hooks/useAmmTransactions";
+import { execTx } from "../hooks/execTx";
 import type { SsuInventory } from "../hooks/useSsuInventory";
 import { MarketStatus } from "./MarketStatus";
 import { RecentActivity } from "./RecentActivity";
@@ -36,7 +37,7 @@ export function SwapPanel({
     const { signAndExecuteTransaction } = useDAppKit();
     const queryClient = useQueryClient();
 
-    const amountIn = BigInt(amountStr || "0");
+    const amountIn = (() => { try { return BigInt(amountStr || "0"); } catch { return 0n; } })();
     const { data: quote } = useAmmQuote(poolConfig, direction, amountIn);
 
     const inLabel = direction === "a_for_b" ? tokenALabel : tokenBLabel;
@@ -47,47 +48,57 @@ export function SwapPanel({
 
     const handleSwap = async () => {
         if (!quote || amountIn <= 0n) return;
+
+        // Capture values before async ops — quote/poolConfig may change during await
+        const minOut = (quote.amountOut * 99n) / 100n;
+        const capturedQuote = quote;
+        const capturedAmountIn = amountIn;
+        const capturedDirection = direction;
+        const typeIdOut = BigInt(capturedDirection === "a_for_b" ? poolConfig.typeIdB : poolConfig.typeIdA);
+        const capturedTotalOutput = quote.totalOutput;
+        const debugInfo = `amountIn=${amountIn} amountOut=${quote.amountOut} minOut=${minOut} fee=${quote.feeAmount} bonus=${quote.bonus} reserves=${poolConfig.reserveA}/${poolConfig.reserveB} targets=${poolConfig.targetA}/${poolConfig.targetB} amp=${poolConfig.amp} dir=${direction} err=${poolConfig._debugErr || "none"}`;
+
         setSubmitting(true);
         setError(null);
         setPendingWithdraw(null);
         try {
-            const minOut = (quote.totalOutput * 99n) / 100n;
-            const tx = buildSwapTx(poolCtx, ssuCtx, { typeIdIn, amountIn, minOut });
-            await signAndExecuteTransaction({ transaction: tx });
-            setPendingWithdraw({ amount: quote.totalOutput.toString(), token: outLabel });
+            await execTx(
+                signAndExecuteTransaction,
+                () => buildSwapTx(poolCtx, ssuCtx, { typeIdIn, amountIn: capturedAmountIn, minOut, typeIdOut, totalOutput: capturedTotalOutput }),
+                { label: "swap" },
+            );
+            setPendingWithdraw({ amount: capturedQuote.totalOutput.toString(), token: outLabel });
             setAmountStr("");
             onSwapComplete();
 
             // Optimistically update inventory: input left main, output arrived in main
-            const typeIdOut = BigInt(direction === "a_for_b" ? poolConfig.typeIdB : poolConfig.typeIdA);
             queryClient.setQueryData<SsuInventory | null>(
                 ["ssu-inventory", ssuCtx.ssuId],
                 (old) => {
                     if (!old) return old;
                     const mainItems = old.main.map((item) => {
                         if (item.typeId === String(typeIdIn)) {
-                            return { ...item, quantity: Math.max(0, item.quantity - Number(amountIn)) };
+                            return { ...item, quantity: Math.max(0, item.quantity - Number(capturedAmountIn)) };
                         }
                         return item;
                     }).filter((item) => item.quantity > 0);
 
-                    // Add output to main (or increment existing)
+                    // Add output to main (or increment existing) — immutable update
                     const outId = String(typeIdOut);
-                    const totalOut = Number(quote.totalOutput);
-                    const existing = mainItems.find((item) => item.typeId === outId);
-                    if (existing) {
-                        existing.quantity += totalOut;
-                    } else {
-                        mainItems.push({ typeId: outId, quantity: totalOut, volume: 0 });
-                    }
+                    const totalOut = Number(capturedQuote.totalOutput);
+                    const hasExisting = mainItems.some((item) => item.typeId === outId);
+                    const updatedMain = hasExisting
+                        ? mainItems.map(item => item.typeId === outId ? { ...item, quantity: item.quantity + totalOut } : item)
+                        : [...mainItems, { typeId: outId, quantity: totalOut, volume: 0 }];
 
-                    return { ...old, main: mainItems };
+                    return { ...old, main: updatedMain };
                 },
             );
             // Also refetch in background to converge with chain state
             setTimeout(() => queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] }), 3000);
         } catch (e) {
-            setError(e instanceof Error ? e.message : "Swap failed");
+            const msg = e instanceof Error ? e.message : String(e);
+            setError(`${msg}\n[debug] ${debugInfo}`);
         } finally {
             setSubmitting(false);
         }
@@ -182,15 +193,16 @@ export function SwapPanel({
                 )}
 
                 {/* Context message */}
-                {amountIn > 0n && quote && (
-                    <div className={`order-context ${quote.isRebalancing ? "bonus" : "warning"}`}>
-                        <span style={{ fontSize: 14, flexShrink: 0 }}>{quote.isRebalancing ? "+" : "!"}</span>
-                        <span>
-                            {quote.isRebalancing
-                                ? "This trade restores balance. Supply incentive earned."
-                                : "This trade increases imbalance. Scarcity surcharge applied."
-                            }
-                        </span>
+                {amountIn > 0n && quote && quote.isRebalancing && (
+                    <div className="order-context bonus">
+                        <span style={{ fontSize: 14, flexShrink: 0 }}>+</span>
+                        <span>This trade restores balance. Supply incentive earned.</span>
+                    </div>
+                )}
+                {amountIn > 0n && quote && !quote.isRebalancing && quote.priceImpactBps > 500n && (
+                    <div className="order-context warning">
+                        <span style={{ fontSize: 14, flexShrink: 0 }}>!</span>
+                        <span>This trade increases imbalance. Scarcity surcharge applied.</span>
                     </div>
                 )}
 

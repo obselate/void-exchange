@@ -1,9 +1,13 @@
+import { BootScreen } from "./BootScreen";
+
 type Props = {
     onConnect: () => void;
+    market?: { tokenA: string; tokenB: string; banner: string };
 };
 
-export function LandingPage({ onConnect }: Props) {
+export function LandingPage({ onConnect, market }: Props) {
     return (
+        <BootScreen>
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 24px" }}>
             {/* Header */}
             <div className="header">
@@ -23,25 +27,33 @@ export function LandingPage({ onConnect }: Props) {
                 <div className="landing-line" />
             </div>
 
+            {/* Market Info (when a specific market is targeted) */}
+            {market && (
+                <div className="terminal-panel" data-label="Market" style={{ marginBottom: 40 }}>
+                    <div style={{
+                        fontFamily: '"Frontier Disket Mono", monospace',
+                        fontSize: 14, color: "var(--accent)", letterSpacing: "3px",
+                        textAlign: "center", padding: "8px 0 4px",
+                    }}>
+                        {market.tokenA} / {market.tokenB}
+                    </div>
+                    {market.banner && (
+                        <div style={{
+                            fontSize: 11, color: "#777", textAlign: "center",
+                            padding: "4px 0 8px", lineHeight: 1.6,
+                        }}>
+                            {market.banner}
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* System Status */}
             <div className="terminal-panel" data-label="System Status" style={{ marginBottom: 40 }}>
                 <StatusRow label="STATUS" value="ONLINE" color="var(--green)" />
                 <StatusRow label="NETWORK" value="STILLNESS TESTNET" color="var(--accent)" />
                 <StatusRow label="MARKETS" value="ACTIVE" color="var(--green)" />
-                <StatusRow label="PROTOCOL" value="STABLESWAP AMM v9" color="var(--accent)" />
-            </div>
-
-            {/* System Brief */}
-            <div className="terminal-panel cyan" data-label="System Brief" style={{ marginBottom: 40 }}>
-                <p style={{ fontSize: 13, lineHeight: 1.8, color: "#999" }}>
-                    Player-operated resource markets deployed at any{" "}
-                    <strong style={{ color: "var(--text-bright)", fontWeight: 400 }}>Smart Storage Unit</strong>.
-                    Prices respond to supply and demand. Trades that worsen imbalance pay a{" "}
-                    <strong style={{ color: "var(--text-bright)", fontWeight: 400 }}>scarcity surcharge</strong>.
-                    Trades that restore balance earn{" "}
-                    <strong style={{ color: "var(--text-bright)", fontWeight: 400 }}>supply incentives</strong>.
-                    The market heals itself.
-                </p>
+                <StatusRow label="PROTOCOL" value="STABLESWAP AMM v10" color="var(--accent)" />
             </div>
 
             {/* Features */}
@@ -76,6 +88,7 @@ export function LandingPage({ onConnect }: Props) {
                 No middlemen. No central bank. Just supply, demand, and math.
             </div>
         </div>
+        </BootScreen>
     );
 }
 

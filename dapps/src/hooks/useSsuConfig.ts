@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
-import { suiClient } from "./useDevInspect";
-import { getAmmPackageId } from "../config";
+import { suiClient } from "./suiClient";
+import { AMM_ENV_ORIGINAL_PACKAGE_ID } from "../config";
 
 export type SsuConfig = {
     ssuId: string;
@@ -11,6 +11,7 @@ export type SsuConfig = {
     ownerCapId: string;
     isOwner: boolean;
     poolIds: string[];
+    adminCapId: string | null;
 };
 
 async function resolveIsv(objectId: string): Promise<number> {
@@ -48,49 +49,67 @@ async function checkOwnership(characterId: string, walletAddress: string): Promi
     }
 }
 
-async function discoverPools(ssuId: string): Promise<string[]> {
-    // Fallback: check localStorage for a known pool and verify it belongs to this SSU
-    const storedPoolId = localStorage.getItem("amm_pool_id");
-    if (storedPoolId) {
-        try {
-            const poolObj = await suiClient.getObject({ id: storedPoolId, options: { showContent: true } });
-            const poolFields = (poolObj.data?.content as any)?.fields;
-            if (poolFields?.ssu_id === ssuId) {
-                return [storedPoolId];
-            }
-        } catch {
-            // Stored pool doesn't exist or doesn't belong to this SSU
-        }
-    }
+type PoolDiscovery = { poolIds: string[]; adminCapId: string | null };
 
-    // Try event-based discovery
-    try {
-        const pkg = getAmmPackageId();
-        const eventTypes = [`${pkg}::amm::SwapWithBonusEvent`, `${pkg}::amm::SwapEvent`];
-        for (const eventType of eventTypes) {
-            const result = await suiClient.queryEvents({
-                query: { MoveEventType: eventType },
-                order: "descending",
-                limit: 25,
+
+async function discoverPools(ssuId: string, walletAddress?: string): Promise<PoolDiscovery> {
+    // Try admin cap discovery first (works for pool owners)
+    if (walletAddress) {
+        const adminCapType = `${AMM_ENV_ORIGINAL_PACKAGE_ID}::amm::AMMAdminCap`;
+        const owned = await suiClient.getOwnedObjects({
+            owner: walletAddress,
+            filter: { StructType: adminCapType },
+            options: { showContent: true },
+        });
+
+        const capMap = new Map<string, string>();
+        for (const item of owned.data || []) {
+            const capFields = (item.data?.content as any)?.fields;
+            const poolId = capFields?.pool_id;
+            if (poolId) capMap.set(poolId, item.data!.objectId);
+        }
+
+        if (capMap.size > 0) {
+            const poolObjs = await suiClient.multiGetObjects({
+                ids: [...capMap.keys()],
+                options: { showContent: true },
             });
-            const poolIds: string[] = [];
-            for (const ev of result.data || []) {
-                const parsed = ev.parsedJson as any;
-                if (parsed?.pool_id && !poolIds.includes(parsed.pool_id)) {
-                    const poolObj = await suiClient.getObject({ id: parsed.pool_id, options: { showContent: true } });
-                    const poolFields = (poolObj.data?.content as any)?.fields;
-                    if (poolFields?.ssu_id === ssuId) {
-                        poolIds.push(parsed.pool_id);
+
+            let bestPool: { poolId: string; adminCapId: string; version: bigint } | null = null;
+            for (const poolObj of poolObjs) {
+                const poolFields = (poolObj.data?.content as any)?.fields;
+                if (poolFields?.ssu_id === ssuId) {
+                    const v = BigInt(poolObj.data!.version);
+                    if (!bestPool || v > bestPool.version) {
+                        bestPool = {
+                            poolId: poolObj.data!.objectId,
+                            adminCapId: capMap.get(poolObj.data!.objectId)!,
+                            version: v,
+                        };
                     }
                 }
             }
-            if (poolIds.length > 0) return poolIds;
+
+            if (bestPool) {
+                return { poolIds: [bestPool.poolId], adminCapId: bestPool.adminCapId };
+            }
         }
-    } catch {
-        // Fall through
     }
 
-    return [];
+    // Fallback for traders: check localStorage for a previously-known pool
+    // (set by ?pool= URL param or a prior owner session on this browser)
+    const cachedPoolId = localStorage.getItem("amm_pool_id");
+    if (cachedPoolId) {
+        try {
+            const poolObj = await suiClient.getObject({ id: cachedPoolId, options: { showContent: true } });
+            const poolFields = (poolObj.data?.content as any)?.fields;
+            if (poolFields?.ssu_id === ssuId) {
+                return { poolIds: [cachedPoolId], adminCapId: null };
+            }
+        } catch { /* cached pool no longer exists, ignore */ }
+    }
+
+    return { poolIds: [], adminCapId: null };
 }
 
 export function useSsuConfig(ssuId: string | null) {
@@ -107,10 +126,10 @@ export function useSsuConfig(ssuId: string | null) {
                 resolveSsuFields(ssuId),
             ]);
 
-            const [characterIsv, isOwner, poolIds] = await Promise.all([
+            const [characterIsv, isOwner, discovery] = await Promise.all([
                 resolveIsv(ssuFields.characterId),
                 walletAddress ? checkOwnership(ssuFields.characterId, walletAddress) : false,
-                discoverPools(ssuId),
+                discoverPools(ssuId, walletAddress),
             ]);
 
             return {
@@ -120,7 +139,8 @@ export function useSsuConfig(ssuId: string | null) {
                 characterIsv,
                 ownerCapId: ssuFields.ownerCapId,
                 isOwner,
-                poolIds,
+                poolIds: discovery.poolIds,
+                adminCapId: discovery.adminCapId,
             };
         },
         enabled: !!ssuId,

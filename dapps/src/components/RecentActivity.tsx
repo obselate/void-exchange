@@ -1,5 +1,5 @@
 import { useSwapEvents } from "../hooks/useSwapEvents";
-import { ITEM_NAMES } from "../config";
+import { itemName } from "../config";
 
 type Props = {
     poolId: string;
@@ -8,13 +8,17 @@ type Props = {
 };
 
 export function RecentActivity({ poolId, typeIdA, typeIdB }: Props) {
-    const { data: events } = useSwapEvents(poolId);
-    const nameA = ITEM_NAMES[typeIdA] || `#${typeIdA}`;
-    const nameB = ITEM_NAMES[typeIdB] || `#${typeIdB}`;
+    const { data: events, isLoading } = useSwapEvents(poolId);
+    const nameA = itemName(typeIdA);
+    const nameB = itemName(typeIdB);
 
     return (
         <div className="terminal-panel muted" data-label="Recent Activity">
-            {!events?.length ? (
+            {isLoading ? (
+                <div style={{ fontSize: 11, color: "var(--accent)", padding: "8px 0", letterSpacing: "0.1em" }}>
+                    Loading activity...
+                </div>
+            ) : !events?.length ? (
                 <div style={{ fontSize: 11, color: "#555", padding: "8px 0" }}>
                     No recent activity
                 </div>
@@ -25,7 +29,7 @@ export function RecentActivity({ poolId, typeIdA, typeIdB }: Props) {
                         ? new Date(ev.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                         : "—";
                     return (
-                        <div key={i} className="activity-row">
+                        <div key={`${ev.timestamp}-${ev.direction}-${ev.amountIn}`} className="activity-row">
                             <span className="activity-time">{time}</span>
                             <span className={`activity-type ${isSellA ? "sell" : "buy"}`}>
                                 {isSellA ? "SELL" : "BUY"}

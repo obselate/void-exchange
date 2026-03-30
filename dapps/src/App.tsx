@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useConnection } from "@evefrontier/dapp-kit";
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -9,33 +9,34 @@ import { LandingPage } from "./components/LandingPage";
 import { SetupWizard } from "./components/SetupWizard";
 import { useAmmPool } from "./hooks/useAmmPool";
 import { useSsuConfig } from "./hooks/useSsuConfig";
-import { ITEM_NAMES } from "./config";
+import { itemName } from "./config";
 
-// Parse SSU ID from URL: ?ssu=0xABC...
-const SSU_ID = new URLSearchParams(window.location.search).get("ssu");
-const IS_OPS = new URLSearchParams(window.location.search).has("ops")
-    || new URLSearchParams(window.location.search).has("admin");
-
-function itemName(typeId: string): string {
-    return ITEM_NAMES[typeId] || `Item #${typeId}`;
-}
+// Parse URL params: ?ssu=0xABC...&pool=0xDEF...&ops&setup
+const _params = new URLSearchParams(window.location.search);
+const SSU_ID = _params.get("ssu");
+const POOL_OVERRIDE = _params.get("pool");
+const IS_OPS = _params.has("ops") || _params.has("admin");
+const FORCE_SETUP = _params.has("setup");
 
 function App() {
     const { handleConnect, handleDisconnect } = useConnection();
     const account = useCurrentAccount();
     const queryClient = useQueryClient();
 
-    const [showLanding, setShowLanding] = useState(() => !SSU_ID && !localStorage.getItem("void_exchange_visited"));
+    const [showLanding, setShowLanding] = useState(true);
 
     // Resolve all SSU config from chain
     const { data: ssuConfig, isLoading: ssuLoading, error: ssuError } = useSsuConfig(SSU_ID);
 
-    // Use first discovered pool (future: pool selector)
-    const activePoolId = ssuConfig?.poolIds?.[0] || localStorage.getItem("amm_pool_id") || "";
+    // Use first discovered pool, with URL override for direct linking
+    const activePoolId = POOL_OVERRIDE || ssuConfig?.poolIds?.[0] || "";
+    // Persist pool ID so traders can rediscover it without the URL param
+    useEffect(() => {
+        if (activePoolId) localStorage.setItem("amm_pool_id", activePoolId);
+    }, [activePoolId]);
     const { data: pool, refetch: refetchPool } = useAmmPool(activePoolId || null);
 
     const handleEnterTerminal = () => {
-        localStorage.setItem("void_exchange_visited", "1");
         setShowLanding(false);
         if (!account) handleConnect();
     };
@@ -46,11 +47,16 @@ function App() {
         queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
     }, [queryClient]);
 
-    // No SSU ID in URL → landing page
+    // Landing page (always shown first, or when no SSU/account)
     if (!SSU_ID || showLanding || !account) {
+        const market = pool ? {
+            tokenA: itemName(pool.config.typeIdA),
+            tokenB: itemName(pool.config.typeIdB),
+            banner: pool.config.banner,
+        } : undefined;
         return (
             <>
-                <LandingPage onConnect={handleEnterTerminal} />
+                <LandingPage onConnect={handleEnterTerminal} market={market} />
                 <StatusBar />
             </>
         );
@@ -82,12 +88,22 @@ function App() {
         );
     }
 
-    // No pool exists
-    if (!activePoolId || !pool) {
+    // No pool exists (or forced setup mode)
+    if (!activePoolId || !pool || FORCE_SETUP) {
         // Owner → show wizard
         if (ssuConfig.isOwner) {
             return (
                 <>
+                    {FORCE_SETUP && pool && (
+                        <div style={{
+                            margin: "12px 10px 0", maxWidth: 540, padding: "10px 14px",
+                            background: "rgba(255, 50, 50, 0.08)", border: "1px solid rgba(255, 50, 50, 0.3)",
+                            fontSize: 11, color: "var(--red)", fontFamily: '"Frontier Disket Mono", monospace',
+                            letterSpacing: "0.05em",
+                        }}>
+                            WARNING: A market already exists at this station. Deploying again will create a duplicate pool and spend gas.
+                        </div>
+                    )}
                     <SetupWizard ssuConfig={ssuConfig} onComplete={handleWizardComplete} />
                     <StatusBar />
                 </>
@@ -167,7 +183,6 @@ function App() {
                             ssuCtx={ssuCtx}
                             poolCtx={poolCtx}
                             poolConfig={pool.config}
-                            onPoolCreated={() => handleWizardComplete()}
                         />
                     </>
                 )}

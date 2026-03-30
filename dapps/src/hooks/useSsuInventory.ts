@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { suiClient } from "./useDevInspect";
+import { suiClient } from "./suiClient";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
@@ -47,26 +47,31 @@ export function useSsuInventory(ssuId: string | null) {
                 const ownerCapId: string = fields.owner_cap_id;
                 const openKey = computeOpenStorageKey(ssuId!);
 
-                const dfList = await suiClient.getDynamicFields({ parentId: ssuId!, limit: 50 });
+                // Paginate all dynamic fields (SSU can have 2 + N player inventories)
+                let cursor: string | null | undefined = undefined;
+                let allDfData: any[] = [];
+                let dfList: any;
+                do {
+                    dfList = await suiClient.getDynamicFields({ parentId: ssuId!, limit: 50, cursor: cursor as any });
+                    allDfData = allDfData.concat(dfList.data);
+                    cursor = dfList.hasNextPage ? dfList.nextCursor : null;
+                } while (cursor);
 
                 const main: InventoryItem[] = [];
                 const open: InventoryItem[] = [];
                 const owned: InventoryItem[] = [];
 
-                for (const df of dfList.data) {
-                    if (df.name?.type !== "0x2::object::ID") continue;
+                const idFields = allDfData.filter((df: any) => df.name?.type === "0x2::object::ID");
+                const dfObjects = await Promise.all(
+                    idFields.map((df: any) => suiClient.getDynamicFieldObject({ parentId: ssuId!, name: df.name })
+                        .then(obj => ({ keyId: df.name.value as string, obj })))
+                );
 
-                    const obj = await suiClient.getDynamicFieldObject({
-                        parentId: ssuId!,
-                        name: df.name,
-                    });
-
+                for (const { keyId, obj } of dfObjects) {
                     const value = (obj.data?.content as any)?.fields?.value?.fields;
                     if (!value?.items) continue;
 
                     const items = parseItems(value.items);
-                    const keyId: string = df.name.value as string;
-
                     if (keyId === ownerCapId) {
                         main.push(...items);
                     } else if (keyId === openKey) {

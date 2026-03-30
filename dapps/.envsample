@@ -4,3 +4,6 @@ VITE_AMM_ORIGINAL_PACKAGE_ID="0x..."
 VITE_AMM_PACKAGE_ID="0x..."
 
 VITE_SUI_GRAPHQL_ENDPOINT="https://graphql.testnet.sui.io/graphql"
+
+# App branding (shown in browser tab)
+VITE_APP_TITLE="VOID EXCHANGE // EVE FRONTIER"

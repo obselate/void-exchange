@@ -1,14 +1,15 @@
-import { useReducer, useEffect } from "react";
+import { useReducer, useEffect, useRef } from "react";
 import { useDAppKit, useCurrentAccount } from "@mysten/dapp-kit-react";
 import { useSsuInventory, InventoryItem } from "../hooks/useSsuInventory";
-import { ITEM_NAMES } from "../config";
+import { itemName } from "../config";
 import {
-    buildAuthorizeTx,
+    buildAuthorizeAndCreatePoolTx,
     buildCreatePoolTx,
-    buildInitFeeConfigTx,
+    buildSeedAndInitFeeTx,
     type SsuContext,
 } from "../hooks/useAmmTransactions";
-import { suiClient } from "../hooks/useDevInspect";
+import { suiClient } from "../hooks/suiClient";
+import { execTx } from "../hooks/execTx";
 import type { SsuConfig } from "../hooks/useSsuConfig";
 
 // === Types ===
@@ -21,6 +22,8 @@ type WizardState = {
     tokenA: InventoryItem | null;
     tokenB: InventoryItem | null;
     // Step 3 output
+    curveType: "volatile" | "stable" | "custom";
+    customAmp: string;
     ratioA: string;
     ratioB: string;
     sliderPct: number; // 0-100
@@ -30,7 +33,8 @@ type WizardState = {
     bonusBps: string;
     // Step 5 state
     deploying: boolean;
-    txStatus: [TxStatus, TxStatus, TxStatus];
+    deployed: boolean;
+    txStatus: [TxStatus, TxStatus];
     deployError: string | null;
 };
 
@@ -38,8 +42,10 @@ type TxStatus = "waiting" | "signing" | "confirmed" | "failed";
 
 type Action =
     | { type: "SET_ITEMS"; items: InventoryItem[] }
-    | { type: "SELECT_TOKEN_A"; item: InventoryItem }
-    | { type: "SELECT_TOKEN_B"; item: InventoryItem }
+    | { type: "SELECT_TOKEN_A"; item: InventoryItem | null }
+    | { type: "SELECT_TOKEN_B"; item: InventoryItem | null }
+    | { type: "SET_CURVE"; curveType: "volatile" | "stable" | "custom" }
+    | { type: "SET_CUSTOM_AMP"; amp: string }
     | { type: "SET_RATIO"; ratioA: string; ratioB: string }
     | { type: "SET_SLIDER"; pct: number }
     | { type: "SET_FEE"; feeBps: string }
@@ -48,7 +54,7 @@ type Action =
     | { type: "NEXT_STEP" }
     | { type: "PREV_STEP" }
     | { type: "START_DEPLOY" }
-    | { type: "TX_STATUS"; index: 0 | 1 | 2; status: TxStatus }
+    | { type: "TX_STATUS"; index: 0 | 1; status: TxStatus }
     | { type: "DEPLOY_ERROR"; error: string }
     | { type: "DEPLOY_DONE" };
 
@@ -57,6 +63,8 @@ const initialState: WizardState = {
     detectedItems: [],
     tokenA: null,
     tokenB: null,
+    curveType: "volatile",
+    customAmp: "50",
     ratioA: "1",
     ratioB: "1",
     sliderPct: 100,
@@ -64,7 +72,8 @@ const initialState: WizardState = {
     surgeBps: "250",
     bonusBps: "150",
     deploying: false,
-    txStatus: ["waiting", "waiting", "waiting"],
+    deployed: false,
+    txStatus: ["waiting", "waiting"],
     deployError: null,
 };
 
@@ -72,16 +81,23 @@ function reducer(state: WizardState, action: Action): WizardState {
     switch (action.type) {
         case "SET_ITEMS": {
             const items = action.items;
-            // Auto-select if exactly 2
+            // Only auto-select when no tokens are chosen yet (avoid resetting on refetch)
+            if (state.tokenA || state.tokenB) {
+                return { ...state, detectedItems: items };
+            }
             if (items.length === 2) {
                 return { ...state, detectedItems: items, tokenA: items[0], tokenB: items[1] };
             }
-            return { ...state, detectedItems: items, tokenA: null, tokenB: null };
+            return { ...state, detectedItems: items };
         }
         case "SELECT_TOKEN_A":
             return { ...state, tokenA: action.item };
         case "SELECT_TOKEN_B":
             return { ...state, tokenB: action.item };
+        case "SET_CURVE":
+            return { ...state, curveType: action.curveType };
+        case "SET_CUSTOM_AMP":
+            return { ...state, customAmp: action.amp };
         case "SET_RATIO":
             return { ...state, ratioA: action.ratioA, ratioB: action.ratioB };
         case "SET_SLIDER":
@@ -97,16 +113,16 @@ function reducer(state: WizardState, action: Action): WizardState {
         case "PREV_STEP":
             return { ...state, step: Math.max(state.step - 1, 1) as WizardState["step"] };
         case "START_DEPLOY":
-            return { ...state, deploying: true, deployError: null, txStatus: ["waiting", "waiting", "waiting"] };
+            return { ...state, deploying: true, deployed: false, deployError: null, txStatus: ["waiting", "waiting"] };
         case "TX_STATUS": {
-            const txStatus = [...state.txStatus] as [TxStatus, TxStatus, TxStatus];
+            const txStatus = [...state.txStatus] as [TxStatus, TxStatus];
             txStatus[action.index] = action.status;
             return { ...state, txStatus };
         }
         case "DEPLOY_ERROR":
             return { ...state, deploying: false, deployError: action.error };
         case "DEPLOY_DONE":
-            return { ...state, deploying: false };
+            return { ...state, deploying: false, deployed: true };
         default:
             return state;
     }
@@ -114,9 +130,6 @@ function reducer(state: WizardState, action: Action): WizardState {
 
 // === Helpers ===
 
-function itemName(typeId: string): string {
-    return ITEM_NAMES[typeId] || `Item #${typeId}`;
-}
 
 function computeReserves(state: WizardState): { reserveA: bigint; reserveB: bigint } {
     if (!state.tokenA || !state.tokenB) return { reserveA: 0n, reserveB: 0n };
@@ -135,13 +148,62 @@ function computeReserves(state: WizardState): { reserveA: bigint; reserveB: bigi
     };
 }
 
-function computeAmp(ratioA: string, ratioB: string): bigint {
-    const rA = Number(ratioA) || 1;
-    const rB = Number(ratioB) || 1;
-    const ratio = Math.max(rA, rB) / Math.min(rA, rB);
-    if (ratio <= 1.5) return 200n;
-    if (ratio <= 3) return 100n;
-    return 50n;
+function getAmp(state: WizardState): bigint {
+    if (state.curveType === "stable") return 200n;
+    if (state.curveType === "custom") return BigInt(Math.max(1, Number(state.customAmp) || 1));
+    return 1n;
+}
+
+/**
+ * Shows how much the price moves for a 10% trade at the given amp.
+ * Uses the StableSwap invariant approximation:
+ *   amp=1 → constant product → ~17% price impact for 10% trade
+ *   amp=200 → stableswap → ~0.1% price impact for 10% trade
+ */
+function PriceImpactPreview({ amp }: { amp: bigint }) {
+    // Simulate a 10% trade on equal reserves (1000/1000) using the invariant.
+    // For constant product: output = y * dx / (x + dx), new_price = (y-dy)/(x+dx)
+    // For stableswap: the amp reduces curvature proportionally.
+    // Approximation: impact ≈ constantProductImpact / (1 + (amp-1) * blendFactor)
+    const a = Number(amp);
+    const tradeSize = 0.10; // 10%
+    // Constant product impact for 10% trade: 1 - (1-f)/(1+f) where f=0.1 → ~17.4%
+    const cpImpact = 1 - (1 - tradeSize) / (1 + tradeSize);
+    // Blend: higher amp → impact approaches zero
+    const impact = cpImpact / (1 + (a - 1) * 0.5);
+    const impactPct = Math.max(0.01, impact * 100);
+
+    // Visual bar: 20 chars wide, filled proportional to impact (max ~18%)
+    const maxImpact = 18;
+    const filled = Math.min(20, Math.round((impactPct / maxImpact) * 20));
+    const bar = "\u2588".repeat(filled) + "\u2591".repeat(20 - filled);
+
+    const color = impactPct > 10 ? "var(--accent)" : impactPct > 2 ? "var(--yellow, #c90)" : "var(--green)";
+
+    return (
+        <div style={{
+            padding: "8px 12px", marginBottom: 16,
+            background: "rgba(10,13,18,0.6)", border: "1px solid var(--border)",
+        }}>
+            <div style={{ fontSize: 9, color: "#555", letterSpacing: "1px", marginBottom: 6 }}>
+                PRICE IMPACT — if a trader buys 10% of reserves:
+            </div>
+            <div style={{ fontFamily: '"Frontier Disket Mono", monospace', fontSize: 12, letterSpacing: "1px" }}>
+                <span style={{ color }}>{bar}</span>
+                <span style={{ color, marginLeft: 8, fontWeight: 700 }}>
+                    {impactPct < 0.1 ? "<0.1" : impactPct.toFixed(1)}%
+                </span>
+            </div>
+            <div style={{ fontSize: 9, color: "#555", marginTop: 4 }}>
+                {impactPct > 10
+                    ? "Large swings — good for scarce/valuable items"
+                    : impactPct > 2
+                        ? "Moderate movement — balanced for most pairs"
+                        : "Minimal movement — prices stay near the set ratio"
+                }
+            </div>
+        </div>
+    );
 }
 
 // === Props ===
@@ -174,84 +236,100 @@ export function SetupWizard({ ssuConfig, onComplete }: Props) {
         characterIsv: ssuConfig.characterIsv,
     };
 
+    // Persisted across retries so we can resume from where we left off
+    const deployState = useRef<{ poolId?: string; poolIsv?: number; adminCapId?: string }>({});
+
     const handleDeploy = async () => {
         if (!state.tokenA || !state.tokenB) return;
         dispatch({ type: "START_DEPLOY" });
 
         const { reserveA, reserveB } = computeReserves(state);
-        const amp = computeAmp(state.ratioA, state.ratioB);
+        const amp = getAmp(state);
         const feeBps = BigInt(state.feeBps);
         const banner = `${itemName(state.tokenA.typeId)} / ${itemName(state.tokenB.typeId)}`;
 
+        const runTx = (buildFn: () => ReturnType<typeof buildCreatePoolTx>, label: string) =>
+            execTx(signAndExecuteTransaction, buildFn, { label, maxRetries: 5 });
+
         try {
-            // TX 1: Authorize
-            dispatch({ type: "TX_STATUS", index: 0, status: "signing" });
-            try {
-                const authTx = await buildAuthorizeTx(ctx, ssuConfig.ownerCapId);
-                await signAndExecuteTransaction({ transaction: authTx });
-            } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                // Skip if already authorized
-                if (!msg.includes("already") && !msg.includes("Already")) {
-                    dispatch({ type: "TX_STATUS", index: 0, status: "failed" });
-                    dispatch({ type: "DEPLOY_ERROR", error: `Authorize failed: ${msg}` });
-                    return;
+            // TX 1: Authorize & Create Pool — batched into a single PTB.
+            if (!deployState.current.poolId) {
+                dispatch({ type: "TX_STATUS", index: 0, status: "signing" });
+
+                const poolParams = {
+                    typeIdA: BigInt(state.tokenA.typeId),
+                    typeIdB: BigInt(state.tokenB.typeId),
+                    reserveA, reserveB, amp, feeBps, banner,
+                    sender: account!.address,
+                };
+
+                let createResult: any;
+                try {
+                    createResult = await runTx(() => buildAuthorizeAndCreatePoolTx(ctx, ssuConfig.ownerCapId, poolParams), "Authorize & Create Pool");
+                } catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    if (msg.includes("rejected by wallet")) throw e;
+                    // Already authorized → retry with create_pool only
+                    console.warn("[Wizard] Combined tx failed, retrying create-only:", msg);
+                    createResult = await runTx(() => buildCreatePoolTx(ctx, poolParams), "Create Pool");
                 }
-            }
-            dispatch({ type: "TX_STATUS", index: 0, status: "confirmed" });
 
-            // TX 2: Create Pool
-            dispatch({ type: "TX_STATUS", index: 1, status: "signing" });
-            const createTx = buildCreatePoolTx(ctx, {
-                typeIdA: BigInt(state.tokenA.typeId),
-                typeIdB: BigInt(state.tokenB.typeId),
-                reserveA, reserveB, amp, feeBps, banner,
-                sender: account!.address,
-            });
-            const createResult = await signAndExecuteTransaction({ transaction: createTx });
-            dispatch({ type: "TX_STATUS", index: 1, status: "confirmed" });
-
-            // Extract Pool ID and AdminCap ID from objectChanges
-            let newPoolId = "";
-            let adminCapId = "";
-            const changes = (createResult as any)?.objectChanges || [];
-            for (const change of changes) {
-                if (change.type === "created") {
-                    if (change.objectType?.includes("AMMPool")) {
-                        newPoolId = change.objectId;
-                    } else if (change.objectType?.includes("AMMAdminCap")) {
-                        adminCapId = change.objectId;
+                const digest = createResult.digest;
+                const txDetail = await suiClient.waitForTransaction({
+                    digest,
+                    options: { showObjectChanges: true },
+                });
+                let newPoolId = "";
+                let adminCapId = "";
+                for (const change of txDetail?.objectChanges || []) {
+                    if (change.type === "created") {
+                        if (change.objectType?.includes("AMMPool")) {
+                            newPoolId = change.objectId;
+                        } else if (change.objectType?.includes("AMMAdminCap")) {
+                            adminCapId = change.objectId;
+                        }
                     }
                 }
+
+                if (!newPoolId || !adminCapId) {
+                    throw new Error(
+                        `Pool created on-chain (tx: ${digest}) but could not extract object IDs. ` +
+                        `Check transaction on explorer and set amm_pool_id / amm_admin_cap_id in localStorage.`
+                    );
+                }
+
+                const poolObj = await suiClient.getObject({ id: newPoolId, options: { showOwner: true } });
+                const poolIsv = Number((poolObj.data?.owner as any)?.Shared?.initial_shared_version);
+                if (!poolIsv) throw new Error(`Pool ${newPoolId} created but ISV could not be resolved. Check explorer.`);
+
+                deployState.current = { poolId: newPoolId, poolIsv, adminCapId };
+                localStorage.setItem("amm_pool_id", newPoolId);
+                localStorage.setItem("amm_pool_isv", String(poolIsv));
+                localStorage.setItem("amm_admin_cap_id", adminCapId);
+                // Clear auto-detected packages so the new pool's packages get resolved fresh
+                localStorage.removeItem("amm_original_package_id");
+                localStorage.removeItem("amm_package_id");
+                dispatch({ type: "TX_STATUS", index: 0, status: "confirmed" });
+            } else {
+                dispatch({ type: "TX_STATUS", index: 0, status: "confirmed" });
             }
 
-            if (!newPoolId || !adminCapId) {
-                dispatch({ type: "TX_STATUS", index: 1, status: "failed" });
-                dispatch({ type: "DEPLOY_ERROR", error: "Could not find Pool or AdminCap in transaction results" });
-                return;
-            }
+            const { poolId: newPoolId, poolIsv, adminCapId } = deployState.current;
 
-            // Wait for finalization and get pool ISV
-            await suiClient.waitForTransaction({ digest: (createResult as any).digest });
-            const poolObj = await suiClient.getObject({ id: newPoolId });
-            const poolIsv = Number((poolObj.data?.owner as any)?.Shared?.initial_shared_version || 0);
-
-            // Store for StationOps access
-            localStorage.setItem("amm_pool_id", newPoolId);
-            localStorage.setItem("amm_pool_isv", String(poolIsv));
-            localStorage.setItem("amm_admin_cap_id", adminCapId);
-
-            // TX 3: Init Fee Config
-            dispatch({ type: "TX_STATUS", index: 2, status: "signing" });
-            const feeConfigTx = buildInitFeeConfigTx(
-                { poolId: newPoolId, poolIsv },
-                { adminCapId, surgeBps: BigInt(state.surgeBps), bonusBps: BigInt(state.bonusBps) },
-            );
-            await signAndExecuteTransaction({ transaction: feeConfigTx });
-            dispatch({ type: "TX_STATUS", index: 2, status: "confirmed" });
+            // TX 2: Seed liquidity for both tokens + init fee config
+            dispatch({ type: "TX_STATUS", index: 1, status: "signing" });
+            const seedFeeParams = {
+                adminCapId: adminCapId!,
+                typeIdA: BigInt(state.tokenA.typeId), amountA: Number(reserveA),
+                typeIdB: BigInt(state.tokenB.typeId), amountB: Number(reserveB),
+                surgeBps: BigInt(state.surgeBps), bonusBps: BigInt(state.bonusBps),
+            };
+            await runTx(() => buildSeedAndInitFeeTx(
+                { poolId: newPoolId!, poolIsv: poolIsv! }, ctx, seedFeeParams,
+            ), "Seed & Init Fees");
+            dispatch({ type: "TX_STATUS", index: 1, status: "confirmed" });
 
             dispatch({ type: "DEPLOY_DONE" });
-            // Brief delay for user to see all green, then transition
             setTimeout(onComplete, 1500);
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -315,6 +393,8 @@ export function SetupWizard({ ssuConfig, onComplete }: Props) {
                     state={state}
                     reserveA={reserveA}
                     reserveB={reserveB}
+                    onCurve={(c) => dispatch({ type: "SET_CURVE", curveType: c })}
+                    onCustomAmp={(a) => dispatch({ type: "SET_CUSTOM_AMP", amp: a })}
                     onRatio={(a, b) => dispatch({ type: "SET_RATIO", ratioA: a, ratioB: b })}
                     onSlider={(pct) => dispatch({ type: "SET_SLIDER", pct })}
                     canAdvance={canAdvanceStep3}
@@ -416,8 +496,8 @@ function StepPair({ items, tokenA, tokenB, onSelectA, onSelectB, canAdvance, onN
     items: InventoryItem[];
     tokenA: InventoryItem | null;
     tokenB: InventoryItem | null;
-    onSelectA: (item: InventoryItem) => void;
-    onSelectB: (item: InventoryItem) => void;
+    onSelectA: (item: InventoryItem | null) => void;
+    onSelectB: (item: InventoryItem | null) => void;
     canAdvance: boolean;
     onNext: () => void;
     onBack: () => void;
@@ -427,11 +507,11 @@ function StepPair({ items, tokenA, tokenB, onSelectA, onSelectB, canAdvance, onN
     const handleItemClick = (item: InventoryItem) => {
         if (isAutoSelected) return; // Can't change when exactly 2
         if (tokenA && tokenA.typeId === item.typeId) {
-            onSelectA(null as any); // Deselect
+            onSelectA(null);
             return;
         }
         if (tokenB && tokenB.typeId === item.typeId) {
-            onSelectB(null as any); // Deselect
+            onSelectB(null);
             return;
         }
         // Select into first empty slot, or replace oldest
@@ -523,10 +603,12 @@ function StepPair({ items, tokenA, tokenB, onSelectA, onSelectB, canAdvance, onN
     );
 }
 
-function StepReserves({ state, reserveA, reserveB, onRatio, onSlider, canAdvance, onNext, onBack }: {
+function StepReserves({ state, reserveA, reserveB, onCurve, onCustomAmp, onRatio, onSlider, canAdvance, onNext, onBack }: {
     state: WizardState;
     reserveA: bigint;
     reserveB: bigint;
+    onCurve: (c: "volatile" | "stable" | "custom") => void;
+    onCustomAmp: (amp: string) => void;
     onRatio: (a: string, b: string) => void;
     onSlider: (pct: number) => void;
     canAdvance: boolean;
@@ -536,18 +618,66 @@ function StepReserves({ state, reserveA, reserveB, onRatio, onSlider, canAdvance
     const nameA = state.tokenA ? itemName(state.tokenA.typeId) : "Token A";
     const nameB = state.tokenB ? itemName(state.tokenB.typeId) : "Token B";
 
+    const curveOptions: { key: "volatile" | "stable" | "custom"; label: string; desc: string }[] = [
+        { key: "volatile", label: "VOLATILE", desc: "Prices shift with every trade. Best when items have very different values." },
+        { key: "stable", label: "STABLE", desc: "Prices stay close to the set ratio. Best when items have similar value." },
+        { key: "custom", label: "CUSTOM", desc: "Set the amplification factor yourself. Higher = more stable pricing." },
+    ];
+
     return (
         <div className="terminal-panel cyan" data-label="Step 3 / 5">
             <div style={{ fontSize: 11, color: "var(--cyan)", letterSpacing: "2px", fontWeight: 700, marginBottom: 10 }}>
-                SET RESERVES
+                PRICING &amp; RESERVES
             </div>
+
+            {/* Curve type */}
+            <div style={{ fontSize: 9, color: "#555", letterSpacing: "2px", marginBottom: 8, borderBottom: "1px solid rgba(232,122,30,0.1)", paddingBottom: 4 }}>
+                MARKET TYPE
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: state.curveType === "custom" ? 8 : 16 }}>
+                {curveOptions.map(opt => {
+                    const selected = state.curveType === opt.key;
+                    return (
+                        <button key={opt.key} onClick={() => onCurve(opt.key)} style={{
+                            flex: 1, padding: "10px 10px 8px", textAlign: "left", cursor: "pointer",
+                            border: selected ? "1px solid var(--cyan)" : "1px solid var(--border)",
+                            background: selected ? "var(--cyan-dim)" : "rgba(10,13,18,0.4)",
+                        }}>
+                            <div style={{
+                                fontSize: 11, fontWeight: 700, letterSpacing: "2px", marginBottom: 6,
+                                color: selected ? "var(--cyan)" : "#555",
+                            }}>
+                                {selected ? "\u25c6 " : "\u25c7 "}{opt.label}
+                            </div>
+                            <div style={{ fontSize: 9, color: selected ? "#999" : "#555", lineHeight: 1.5 }}>
+                                {opt.desc}
+                            </div>
+                        </button>
+                    );
+                })}
+            </div>
+            {state.curveType === "custom" && (
+                <div style={{
+                    display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+                    border: "1px solid var(--border)", background: "rgba(10,13,18,0.4)", marginBottom: 8,
+                }}>
+                    <span style={{ fontSize: 10, color: "#555", letterSpacing: "1px", whiteSpace: "nowrap" }}>AMP FACTOR</span>
+                    <input type="number" min="1" max="10000" value={state.customAmp}
+                        onChange={e => onCustomAmp(e.target.value)}
+                        style={{ width: 80, padding: "6px 8px", fontSize: 12, textAlign: "right" }} />
+                    <span style={{ fontSize: 9, color: "#555" }}>1 = volatile &middot; 200+ = stable</span>
+                </div>
+            )}
+
+            {/* Price impact preview */}
+            <PriceImpactPreview amp={getAmp(state)} />
 
             {/* Ratio */}
             <div style={{ fontSize: 9, color: "#555", letterSpacing: "2px", marginBottom: 8, borderBottom: "1px solid rgba(232,122,30,0.1)", paddingBottom: 4 }}>
                 PRICE RATIO
             </div>
             <div style={{ fontSize: 10, color: "#666", marginBottom: 10 }}>
-                Set the exchange rate between your two items. 1:1 means equal value.
+                Set the starting exchange rate between your two items. 1:1 means equal value.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
                 <div style={{ flex: 1 }}>
@@ -570,7 +700,7 @@ function StepReserves({ state, reserveA, reserveB, onRatio, onSlider, canAdvance
                 RESERVE SIZE
             </div>
             <div style={{ fontSize: 10, color: "#666", marginBottom: 10 }}>
-                How much liquidity to put into the market. More = less price impact per trade.
+                How much of your inventory to put into the market. More = less price impact per trade.
             </div>
             <input type="range" min="10" max="100" value={state.sliderPct}
                 onChange={e => onSlider(Number(e.target.value))}
@@ -683,9 +813,8 @@ function StepDeploy({ state, reserveA, reserveB, onDeploy, onBack }: {
     const nameB = state.tokenB ? itemName(state.tokenB.typeId) : "—";
 
     const txLabels = [
-        { title: "Authorize Market Extension", detail: "Grants the AMM smart contract permission to manage inventory on this SSU" },
-        { title: "Create Trading Pool", detail: `Deploys pool with your reserves and price ratio. Creates your admin key.` },
-        { title: "Enable Dynamic Pricing", detail: "Activates scarcity surcharges and rebalance bonuses on your market" },
+        { title: "Authorize & Create Pool", detail: "Grants AMM permission on this SSU and deploys the trading pool with your price ratio." },
+        { title: "Seed Reserves & Enable Pricing", detail: "Moves items from SSU storage into market reserves and activates dynamic pricing." },
     ];
 
     return (
@@ -700,6 +829,7 @@ function StepDeploy({ state, reserveA, reserveB, onDeploy, onBack }: {
             </div>
             {[
                 ["Trade Pair", `${nameA} / ${nameB}`],
+                ["Market Type", state.curveType === "stable" ? "Stable" : state.curveType === "volatile" ? "Volatile" : `Custom (amp ${state.customAmp})`],
                 ["Price Ratio", `${state.ratioA} : ${state.ratioB}`],
                 ["Starting Reserves", `${reserveA.toLocaleString()} / ${reserveB.toLocaleString()}`],
                 ["Base Fee", `${(Number(state.feeBps) / 100).toFixed(2)}% (${state.feeBps} BPS)`],
@@ -721,7 +851,7 @@ function StepDeploy({ state, reserveA, reserveB, onDeploy, onBack }: {
                 margin: "14px 0 10px", fontSize: 10, color: "#888",
             }}>
                 <span style={{ color: "var(--accent)", fontSize: 14, flexShrink: 0 }}>&#9888;</span>
-                <span>You will be asked to sign <strong style={{ color: "var(--text-bright)" }}>3 transactions</strong> in your wallet.</span>
+                <span>You will be asked to sign <strong style={{ color: "var(--text-bright)" }}>2 transactions</strong> in your wallet.</span>
             </div>
 
             {txLabels.map((tx, i) => (
@@ -737,7 +867,7 @@ function StepDeploy({ state, reserveA, reserveB, onDeploy, onBack }: {
                         <div style={{ fontSize: 11, color: "var(--text-bright)", marginBottom: 2 }}>{tx.title}</div>
                         <div style={{ fontSize: 9, color: "#555", lineHeight: 1.4 }}>{tx.detail}</div>
                     </div>
-                    {state.deploying && (
+                    {(state.deploying || state.deployed) && (
                         <TxStatusBadge status={state.txStatus[i]} />
                     )}
                 </div>
@@ -747,8 +877,25 @@ function StepDeploy({ state, reserveA, reserveB, onDeploy, onBack }: {
                 <div className="error" style={{ marginTop: 8 }}>{state.deployError}</div>
             )}
 
+            {state.deployed && (
+                <div style={{
+                    marginTop: 12, padding: "14px 16px", textAlign: "center",
+                    background: "rgba(0,255,136,0.06)", border: "1px solid rgba(0,255,136,0.25)",
+                }}>
+                    <div style={{
+                        fontSize: 13, fontWeight: 700, letterSpacing: "3px",
+                        color: "var(--green)", marginBottom: 4,
+                    }}>
+                        MARKET ONLINE
+                    </div>
+                    <div style={{ fontSize: 10, color: "#888" }}>
+                        Loading trading terminal...
+                    </div>
+                </div>
+            )}
+
             <div style={{ marginTop: 14 }}>
-                {!state.deploying ? (
+                {!state.deploying && !state.deployed ? (
                     <div style={{ display: "flex", gap: 8 }}>
                         <button onClick={onBack} style={{ padding: "10px 16px", fontSize: 10, letterSpacing: "1px" }}>
                             &larr; BACK

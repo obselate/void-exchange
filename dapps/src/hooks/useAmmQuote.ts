@@ -22,7 +22,7 @@ const MAX_ITER = 64;
 
 function stableGetD(x: bigint, y: bigint, amp: bigint): bigint {
     const s = x + y;
-    if (s === 0n) return 0n;
+    if (s === 0n || x === 0n || y === 0n) return 0n;
     const ann = amp * N_COINS;
     let d = s;
     for (let i = 0; i < MAX_ITER; i++) {
@@ -51,36 +51,53 @@ function stableGetY(xNew: bigint, d: bigint, amp: bigint): bigint {
     return y;
 }
 
-function stableOutput(reserveIn: bigint, reserveOut: bigint, amp: bigint, netIn: bigint): bigint {
-    const d = stableGetD(reserveIn, reserveOut, amp);
-    const xNew = reserveIn + netIn;
+function stableOutput(reserveIn: bigint, reserveOut: bigint, amp: bigint, netIn: bigint, targetIn: bigint, targetOut: bigint): bigint {
+    // Normalize reserves by target ratio so the curve's peg point matches the
+    // intended market ratio, not 1:1. At balance: normIn == normOut.
+    const normIn = reserveIn * targetOut;
+    const normOut = reserveOut * targetIn;
+    const normNetIn = netIn * targetOut;
+
+    const d = stableGetD(normIn, normOut, amp);
+    const xNew = normIn + normNetIn;
     const yNew = stableGetY(xNew, d, amp);
-    const raw = reserveOut - yNew;
-    return raw > 0n ? raw - 1n : 0n;
+    const rawNorm = normOut - yNew;
+
+    // Denormalize: divide by targetIn (the output token's scaling factor)
+    // Integer division already rounds down conservatively — no extra -1 needed
+    return rawNorm / targetIn;
 }
 
 // ============================================================
 // Dynamic fee + bonus (mirrors Move contract)
 // ============================================================
 
-function computeImbalance(reserveIn: bigint, reserveOut: bigint): bigint {
-    const total = reserveIn + reserveOut;
-    if (total === 0n) return 0n;
-    const diff = reserveIn > reserveOut ? reserveIn - reserveOut : reserveOut - reserveIn;
-    return diff * BPS_DENOM / total;
+function computeImbalance(reserveIn: bigint, reserveOut: bigint, targetIn: bigint, targetOut: bigint): bigint {
+    // Cross-product comparison: at balance, reserveIn * targetOut == reserveOut * targetIn
+    const actualCross = reserveIn * targetOut;
+    const targetCross = reserveOut * targetIn;
+    const crossSum = actualCross + targetCross;
+    if (crossSum === 0n) return 0n;
+    const crossDiff = actualCross > targetCross ? actualCross - targetCross : targetCross - actualCross;
+    return crossDiff * BPS_DENOM / crossSum;
 }
 
 function computeFee(
     amountIn: bigint, baseFee: bigint, imbalanceBps: bigint,
     isWorsening: boolean, surgeBps: bigint,
 ): { fee: bigint; effectiveBps: bigint } {
+    let fee: bigint;
+    let effectiveBps: bigint;
     if (!isWorsening || surgeBps === 0n) {
-        const fee = amountIn * baseFee / BPS_DENOM;
-        return { fee, effectiveBps: baseFee };
+        fee = amountIn * baseFee / BPS_DENOM;
+        effectiveBps = baseFee;
+    } else {
+        const surge = imbalanceBps * surgeBps / BPS_DENOM;
+        effectiveBps = baseFee + surge;
+        fee = amountIn * effectiveBps / BPS_DENOM;
     }
-    const surge = imbalanceBps * surgeBps / BPS_DENOM;
-    const effectiveBps = baseFee + surge;
-    const fee = amountIn * effectiveBps / BPS_DENOM;
+    // Minimum fee of 1 for any trade when fees are configured
+    if (fee === 0n && baseFee > 0n) fee = 1n;
     return { fee, effectiveBps };
 }
 
@@ -97,10 +114,13 @@ function computeBonus(
     return capped;
 }
 
-function calcPriceImpact(resIn: bigint, resOut: bigint, netIn: bigint, amtOut: bigint): bigint {
+function calcPriceImpact(resIn: bigint, resOut: bigint, amp: bigint, netIn: bigint, amtOut: bigint, targetIn: bigint, targetOut: bigint): bigint {
     if (netIn === 0n || amtOut === 0n) return 0n;
+    // Marginal rate from StableSwap curve (output for 1 unit), not naive resOut/resIn
+    const marginalOut = stableOutput(resIn, resOut, amp, 1n, targetIn, targetOut);
+    if (marginalOut === 0n) return 0n;
     const SCALE = 100_000_000n;
-    const spot = resOut * SCALE / resIn;
+    const spot = marginalOut * SCALE; // per 1 unit in
     const effective = amtOut * SCALE / netIn;
     if (effective >= spot) return 0n;
     return (spot - effective) * BPS_DENOM / spot;
@@ -121,17 +141,21 @@ export function useAmmQuote(
         const isAForB = direction === "a_for_b";
         const reserveIn = BigInt(isAForB ? config.reserveA : config.reserveB);
         const reserveOut = BigInt(isAForB ? config.reserveB : config.reserveA);
+        const targetIn = BigInt(isAForB ? config.targetA : config.targetB);
+        const targetOut = BigInt(isAForB ? config.targetB : config.targetA);
         const amp = BigInt(config.amp);
         const baseFee = BigInt(config.feeBps);
         const surgeBps = BigInt(config.surgeBps);
         const bonusBps = BigInt(config.bonusBps);
         const feePoolOut = BigInt(isAForB ? config.feePoolB : config.feePoolA);
 
-        // Worsening = selling the side that already has more
-        const isWorsening = reserveIn >= reserveOut;
+        // Worsening = selling the side that's already oversupplied relative to target
+        const actualCross = reserveIn * targetOut;
+        const targetCross = reserveOut * targetIn;
+        const isWorsening = actualCross >= targetCross;
         const isRebalancing = !isWorsening;
 
-        const imbalanceBps = computeImbalance(reserveIn, reserveOut);
+        const imbalanceBps = computeImbalance(reserveIn, reserveOut, targetIn, targetOut);
 
         const { fee: feeAmount, effectiveBps } = computeFee(
             amountIn, baseFee, imbalanceBps, isWorsening, surgeBps,
@@ -139,13 +163,13 @@ export function useAmmQuote(
         const netIn = amountIn - feeAmount;
         if (netIn <= 0n) return null;
 
-        const amountOut = stableOutput(reserveIn, reserveOut, amp, netIn);
+        const amountOut = stableOutput(reserveIn, reserveOut, amp, netIn, targetIn, targetOut);
         if (amountOut >= reserveOut || amountOut === 0n) return null;
 
         const bonus = computeBonus(amountOut, imbalanceBps, isWorsening, bonusBps, feePoolOut, feeAmount);
         const totalOutput = amountOut + bonus;
 
-        const priceImpactBps = calcPriceImpact(reserveIn, reserveOut, netIn, amountOut);
+        const priceImpactBps = calcPriceImpact(reserveIn, reserveOut, amp, netIn, amountOut, targetIn, targetOut);
 
         // Max input: largest amount where output > 0 and impact < 50%
         const maxImpact = 5000n;
@@ -158,11 +182,11 @@ export function useAmmQuote(
             const { fee: mFee } = computeFee(mid, baseFee, imbalanceBps, isWorsening, surgeBps);
             const mNet = mid - mFee;
             if (mNet <= 0n) { hi = mid - 1n; continue; }
-            const mOut = stableOutput(reserveIn, reserveOut, amp, mNet);
+            const mOut = stableOutput(reserveIn, reserveOut, amp, mNet, targetIn, targetOut);
             if (mOut === 0n || mOut >= reserveOut) {
                 hi = mid - 1n;
             } else {
-                const mImpact = calcPriceImpact(reserveIn, reserveOut, mNet, mOut);
+                const mImpact = calcPriceImpact(reserveIn, reserveOut, amp, mNet, mOut, targetIn, targetOut);
                 if (mImpact <= maxImpact) {
                     best = mid;
                     lo = mid + 1n;

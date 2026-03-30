@@ -1,15 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useDAppKit, useCurrentAccount } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-    buildCreatePoolTx, buildSeedTx, buildSetReservesTx,
-    buildInitFeeConfigTx, buildUpdateFeeConfigTx,
-    buildWithdrawFeesTx, buildRollFeesToReservesTx,
+    buildSeedTx, buildSetReservesTx,
+    buildInitFeeConfigTx, buildUpdateFeeConfigTx, buildUpdateFeeBpsTx,
+    buildWithdrawFeesTx, buildRollFeesToReservesTx, buildRescueItemsTx,
     type SsuContext, type PoolContext,
 } from "../hooks/useAmmTransactions";
-import { getAmmPackageId, setAmmPackageId, ITEM_NAMES } from "../config";
+import { getAmmPackageId, setAmmPackageId, getAmmOriginalPackageId, itemName } from "../config";
+import { execTx } from "../hooks/execTx";
 import { useSsuInventory, InventoryItem } from "../hooks/useSsuInventory";
 import type { SsuConfig } from "../hooks/useSsuConfig";
+import { useAdminCap } from "../hooks/useAdminCap";
 
 import { AmmPoolData } from "../hooks/useAmmPool";
 
@@ -18,7 +20,6 @@ type Props = {
     ssuCtx: SsuContext;
     poolCtx: PoolContext;
     poolConfig: AmmPoolData | null;
-    onPoolCreated: () => void;
 };
 
 function Section({ title, defaultOpen = true, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
@@ -68,7 +69,7 @@ function InvCol({ title, items }: { title: string; items: InventoryItem[] }) {
                 ? <div style={{ color: "var(--text-muted)" }}>Empty</div>
                 : items.map((item) => (
                     <div key={item.typeId} style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ color: "var(--text-muted)" }}>{ITEM_NAMES[item.typeId] || `#${item.typeId}`}</span>
+                        <span style={{ color: "var(--text-muted)" }}>{itemName(item.typeId)}</span>
                         <span>{item.quantity}</span>
                     </div>
                 ))
@@ -77,12 +78,28 @@ function InvCol({ title, items }: { title: string; items: InventoryItem[] }) {
     );
 }
 
-export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreated }: Props) {
+export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig }: Props) {
     const { signAndExecuteTransaction } = useDAppKit();
     const account = useCurrentAccount();
     const queryClient = useQueryClient();
     const [status, setStatus] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const showStatus = (msg: string) => {
+        setStatus(msg);
+        setError(null);
+        if (statusTimer.current) clearTimeout(statusTimer.current);
+        statusTimer.current = setTimeout(() => setStatus(null), 4000);
+    };
+    const showError = (msg: string) => {
+        setError(msg);
+        setStatus(null);
+        if (statusTimer.current) clearTimeout(statusTimer.current);
+    };
+
+    // Resolve admin cap for the ACTIVE pool (not just any discovered pool)
+    const { data: resolvedAdminCap } = useAdminCap(poolCtx.poolId);
 
     // Pool config / IDs
     const [poolIdInput, setPoolIdInput] = useState(localStorage.getItem("amm_pool_id") || "");
@@ -90,16 +107,19 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
     const [adminCapId, setAdminCapId] = useState(localStorage.getItem("amm_admin_cap_id") || "");
     const [packageId, setPackageId] = useState(getAmmPackageId());
 
-    // Create pool params
-    const [typeIdA, setTypeIdA] = useState("77800");
-    const [typeIdB, setTypeIdB] = useState("77810");
-    const [initReserveA, setInitReserveA] = useState("100");
-    const [initReserveB, setInitReserveB] = useState("100");
-    const [amp, setAmp] = useState("200");
-    const [feeBps, setFeeBps] = useState("50");
-    const [banner, setBanner] = useState("Feldspar / Platinum \u2014 0.5% fee");
+    // Auto-update admin cap when chain lookup resolves (only on new resolution, not on user edits)
+    useEffect(() => {
+        if (resolvedAdminCap) {
+            setAdminCapId(resolvedAdminCap);
+            localStorage.setItem("amm_admin_cap_id", resolvedAdminCap);
+        }
+    }, [resolvedAdminCap]);
 
-    // Seed amounts (separate from pool creation)
+    // Derive token IDs from pool config
+    const typeIdA = poolConfig?.typeIdA || "77800";
+    const typeIdB = poolConfig?.typeIdB || "77810";
+
+    // Seed amounts
     const [seedAmountA, setSeedAmountA] = useState("");
     const [seedAmountB, setSeedAmountB] = useState("");
 
@@ -107,9 +127,19 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
     const [setResA, setSetResA] = useState("");
     const [setResB, setSetResB] = useState("");
 
-    // Fee config
-    const [surgeBps, setSurgeBps] = useState("250");
-    const [bonusBps, setBonusBps] = useState("150");
+    // Fee config — sync from on-chain values when they first load
+    const hasFeeConfig = poolConfig && (poolConfig.surgeBps !== "0" || poolConfig.bonusBps !== "0" || poolConfig.feePoolA !== "0" || poolConfig.feePoolB !== "0");
+    const [feeBps, setFeeBps] = useState(poolConfig?.feeBps || "50");
+    const [surgeBps, setSurgeBps] = useState(poolConfig?.surgeBps && poolConfig.surgeBps !== "0" ? poolConfig.surgeBps : "250");
+    const [bonusBps, setBonusBps] = useState(poolConfig?.bonusBps && poolConfig.bonusBps !== "0" ? poolConfig.bonusBps : "150");
+    const feeConfigSynced = useRef(false);
+    useEffect(() => {
+        if (feeConfigSynced.current || !poolConfig) return;
+        feeConfigSynced.current = true;
+        setFeeBps(poolConfig.feeBps);
+        if (poolConfig.surgeBps && poolConfig.surgeBps !== "0") setSurgeBps(poolConfig.surgeBps);
+        if (poolConfig.bonusBps && poolConfig.bonusBps !== "0") setBonusBps(poolConfig.bonusBps);
+    }, [poolConfig]);
 
     // Fee management
     const [feeAction, setFeeAction] = useState<"withdraw" | "roll">("withdraw");
@@ -118,16 +148,22 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
 
     const { data: inventory } = useSsuInventory(ssuConfig.ssuId);
 
+    const runTx = async (buildFn: () => ReturnType<typeof buildInitFeeConfigTx>, label: string) => {
+        await execTx(signAndExecuteTransaction, buildFn, { label });
+    };
+
     const handleInitFeeConfig = async () => {
-        if (!adminCapId) { setError("Set AdminCap ID first"); return; }
+        if (!adminCapId) { showError("Set AdminCap ID first"); return; }
         setStatus("Initializing fee config..."); setError(null);
         try {
-            const tx = buildInitFeeConfigTx(poolCtx, { adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) });
-            await signAndExecuteTransaction({ transaction: tx });
-            setStatus("Fee config initialized!");
+            await runTx(
+                () => buildInitFeeConfigTx(poolCtx, { adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) }),
+                "Init fee config",
+            );
+            showStatus("Fee config initialized!");
             queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
         } catch (e) {
-            setError(e instanceof Error ? e.message : "Failed"); setStatus(null);
+            showError(e instanceof Error ? e.message : "Failed");
         }
     };
 
@@ -144,34 +180,53 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
     };
 
     const handleFeeAction = async (typeId: string, label: string) => {
-        if (!adminCapId) { setError("Set AdminCap ID first"); return; }
+        if (!adminCapId) { showError("Set AdminCap ID first"); return; }
         const amount = resolveFeeAmount(typeId);
-        if (amount <= 0n) { setError("Nothing to " + feeAction); return; }
+        if (amount <= 0n) { showError("Nothing to " + feeAction); return; }
         const actionLabel = feeAction === "withdraw" ? "Withdrawing" : "Rolling";
         setStatus(`${actionLabel} ${amount} ${label} fees...`); setError(null);
         try {
-            const tx = feeAction === "withdraw"
-                ? buildWithdrawFeesTx(poolCtx, ssuCtx, { adminCapId, typeId: BigInt(typeId), amount })
-                : buildRollFeesToReservesTx(poolCtx, { adminCapId, typeId: BigInt(typeId), amount });
-            await signAndExecuteTransaction({ transaction: tx });
-            setStatus(`${feeAction === "withdraw" ? "Withdrawn" : "Rolled"} ${amount} ${label}`);
+            await runTx(
+                () => feeAction === "withdraw"
+                    ? buildWithdrawFeesTx(poolCtx, ssuCtx, { adminCapId, typeId: BigInt(typeId), amount })
+                    : buildRollFeesToReservesTx(poolCtx, { adminCapId, typeId: BigInt(typeId), amount }),
+                `${feeAction} fees ${label}`,
+            );
+            showStatus(`${feeAction === "withdraw" ? "Withdrawn" : "Rolled"} ${amount} ${label}`);
             queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] });
             queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
         } catch (e) {
-            setError(e instanceof Error ? e.message : "Failed"); setStatus(null);
+            showError(e instanceof Error ? e.message : "Failed");
+        }
+    };
+
+    const handleUpdateFeeBps = async () => {
+        if (!adminCapId) { showError("Set AdminCap ID first"); return; }
+        setStatus("Updating base fee..."); setError(null);
+        try {
+            await runTx(
+                () => buildUpdateFeeBpsTx(poolCtx, { adminCapId, feeBps: BigInt(feeBps) }),
+                "Update fee BPS",
+            );
+            showStatus("Base fee updated!");
+            queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
+        } catch (e) {
+            showError(e instanceof Error ? e.message : "Failed");
         }
     };
 
     const handleUpdateFeeConfig = async () => {
-        if (!adminCapId) { setError("Set AdminCap ID first"); return; }
+        if (!adminCapId) { showError("Set AdminCap ID first"); return; }
         setStatus("Updating fee config..."); setError(null);
         try {
-            const tx = buildUpdateFeeConfigTx(poolCtx, { adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) });
-            await signAndExecuteTransaction({ transaction: tx });
-            setStatus("Fee config updated!");
+            await runTx(
+                () => buildUpdateFeeConfigTx(poolCtx, { adminCapId, surgeBps: BigInt(surgeBps), bonusBps: BigInt(bonusBps) }),
+                "Update fee config",
+            );
+            showStatus("Fee config updated!");
             queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
         } catch (e) {
-            setError(e instanceof Error ? e.message : "Failed"); setStatus(null);
+            showError(e instanceof Error ? e.message : "Failed");
         }
     };
 
@@ -182,56 +237,43 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
         }
         if (adminCapId) localStorage.setItem("amm_admin_cap_id", adminCapId);
         if (packageId) setAmmPackageId(packageId);
-        setStatus("Config saved. Reload to apply.");
-    };
-
-    const handleCreatePool = async () => {
-        const sender = account?.address;
-        if (!sender) { setError("Wallet not connected"); return; }
-        setStatus("Creating pool..."); setError(null);
-        try {
-            const tx = buildCreatePoolTx(ssuCtx, {
-                typeIdA: BigInt(typeIdA), typeIdB: BigInt(typeIdB),
-                reserveA: BigInt(initReserveA), reserveB: BigInt(initReserveB),
-                amp: BigInt(amp), feeBps: BigInt(feeBps), banner, sender,
-            });
-            await signAndExecuteTransaction({ transaction: tx });
-            setStatus("Pool created! Grab Pool ID + ISV from Suiscan.");
-        } catch (e) {
-            setError(e instanceof Error ? e.message : "Failed"); setStatus(null);
-        }
+        showStatus("Config saved. Reload to apply.");
     };
 
     const handleSeed = async (typeId: string, amount: string, label: string) => {
-        if (!adminCapId) { setError("Set AdminCap ID first"); return; }
-        if (!amount || Number(amount) <= 0) { setError("Enter a seed amount"); return; }
+        if (!adminCapId) { showError("Set AdminCap ID first"); return; }
+        if (!amount || Number(amount) <= 0) { showError("Enter a seed amount"); return; }
         setStatus(`Seeding ${label}...`); setError(null);
         try {
-            const tx = buildSeedTx(poolCtx, ssuCtx, { adminCapId, typeId: BigInt(typeId), amount: Number(amount) });
-            await signAndExecuteTransaction({ transaction: tx });
-            setStatus(`${label} seeded: ${amount}`);
+            await runTx(
+                () => buildSeedTx(poolCtx, ssuCtx, { adminCapId, ownerCapId: ssuConfig.ownerCapId, typeId: BigInt(typeId), amount: Number(amount) }),
+                `Seed ${label}`,
+            );
+            showStatus(`${label} seeded: ${amount}`);
             queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] });
         } catch (e) {
-            setError(e instanceof Error ? e.message : "Seed failed"); setStatus(null);
+            showError(e instanceof Error ? e.message : "Seed failed");
         }
     };
 
     const handleSetReserves = async () => {
-        if (!adminCapId) { setError("Set AdminCap ID first"); return; }
-        if (!setResA || !setResB) { setError("Enter both reserve values"); return; }
+        if (!adminCapId) { showError("Set AdminCap ID first"); return; }
+        if (!setResA || !setResB) { showError("Enter both reserve values"); return; }
         setStatus("Setting reserves..."); setError(null);
         try {
-            const tx = buildSetReservesTx(poolCtx, { adminCapId, reserveA: BigInt(setResA), reserveB: BigInt(setResB) });
-            await signAndExecuteTransaction({ transaction: tx });
-            setStatus(`Reserves set: ${setResA} / ${setResB}`);
+            await runTx(
+                () => buildSetReservesTx(poolCtx, { adminCapId, reserveA: BigInt(setResA), reserveB: BigInt(setResB) }),
+                "Set reserves",
+            );
+            showStatus(`Reserves set: ${setResA} / ${setResB}`);
             queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] });
         } catch (e) {
-            setError(e instanceof Error ? e.message : "Failed"); setStatus(null);
+            showError(e instanceof Error ? e.message : "Failed");
         }
     };
 
-    const tokenAName = ITEM_NAMES[typeIdA] || `#${typeIdA}`;
-    const tokenBName = ITEM_NAMES[typeIdB] || `#${typeIdB}`;
+    const tokenAName = itemName(typeIdA);
+    const tokenBName = itemName(typeIdB);
 
     return (
         <div className="panel">
@@ -247,6 +289,39 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</div>
                 )}
             </div>
+
+            {/* Rescue items from open inventory (e.g., drain old pool) */}
+            {inventory && inventory.open.length > 0 && (
+                <>
+                    <div style={{ marginBottom: 12 }}>
+                        <button
+                            onClick={async () => {
+                                const items = inventory.open
+                                    .filter(i => i.quantity > 0)
+                                    .map(i => ({ typeId: BigInt(i.typeId), amount: i.quantity }));
+                                if (!items.length) return;
+                                setStatus("Rescuing items..."); setError(null);
+                                try {
+                                    await runTx(
+                                        () => buildRescueItemsTx(poolCtx, ssuCtx, adminCapId, items),
+                                        "Rescue items",
+                                    );
+                                    showStatus("Items rescued!");
+                                    queryClient.invalidateQueries({ queryKey: ["ssu-inventory"] });
+                                } catch (e: any) {
+                                    showError(e?.message || "Rescue failed");
+                                }
+                            }}
+                            style={{ width: "100%" }}
+                        >
+                            RESCUE ALL FROM OPEN INVENTORY
+                        </button>
+                        <div style={{ fontSize: 10, color: "#666", marginTop: 4 }}>
+                            Moves all items from Market Supply back to Station Cargo.
+                        </div>
+                    </div>
+                </>
+            )}
 
             <div className="divider" />
 
@@ -296,15 +371,31 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
 
             {/* Set reserves */}
             <Section title="Adjust Supply" defaultOpen={false}>
+                {poolConfig && (
+                    <div style={{
+                        fontSize: 11, padding: "8px 10px", marginBottom: 10,
+                        background: "var(--bg-input)", border: "1px solid var(--border)",
+                        fontFamily: '"Frontier Disket Mono", monospace',
+                    }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                            <span style={{ color: "var(--text-muted)" }}>Current {tokenAName}</span>
+                            <span>{poolConfig.reserveA}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ color: "var(--text-muted)" }}>Current {tokenBName}</span>
+                            <span>{poolConfig.reserveB}</span>
+                        </div>
+                    </div>
+                )}
                 <Row>
                     <div style={{ flex: 1 }}>
-                        <Field label={`Reserve A (${tokenAName})`}>
-                            <input type="number" value={setResA} onChange={(e) => setSetResA(e.target.value)} placeholder="0" />
+                        <Field label={`New ${tokenAName}`}>
+                            <input type="number" value={setResA} onChange={(e) => setSetResA(e.target.value)} placeholder={poolConfig?.reserveA || "0"} />
                         </Field>
                     </div>
                     <div style={{ flex: 1 }}>
-                        <Field label={`Reserve B (${tokenBName})`}>
-                            <input type="number" value={setResB} onChange={(e) => setSetResB(e.target.value)} placeholder="0" />
+                        <Field label={`New ${tokenBName}`}>
+                            <input type="number" value={setResB} onChange={(e) => setSetResB(e.target.value)} placeholder={poolConfig?.reserveB || "0"} />
                         </Field>
                     </div>
                 </Row>
@@ -313,41 +404,129 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
 
             {/* Pricing controls */}
             <Section title="Pricing Controls" defaultOpen={false}>
+                <Field label={`Base Tax (BPS) — current: ${poolConfig?.feeBps || "0"}`}>
+                    <div style={{ display: "flex", gap: 0 }}>
+                        <input type="number" value={feeBps} onChange={(e) => setFeeBps(e.target.value)} placeholder={poolConfig?.feeBps || "50"} style={{ borderRight: "none" }} />
+                        <button onClick={handleUpdateFeeBps} style={{ whiteSpace: "nowrap", padding: "8px 12px" }}>UPDATE</button>
+                    </div>
+                </Field>
                 <Row>
                     <div style={{ flex: 1 }}>
-                        <Field label="Scarcity Rate (BPS)">
-                            <input type="number" value={surgeBps} onChange={(e) => setSurgeBps(e.target.value)} placeholder="250" />
+                        <Field label={`Scarcity Rate (BPS)${hasFeeConfig ? ` — current: ${poolConfig!.surgeBps}` : ""}`}>
+                            <input type="number" value={surgeBps} onChange={(e) => setSurgeBps(e.target.value)} placeholder={poolConfig?.surgeBps || "250"} />
                         </Field>
                     </div>
                     <div style={{ flex: 1 }}>
-                        <Field label="Incentive Rate (BPS)">
-                            <input type="number" value={bonusBps} onChange={(e) => setBonusBps(e.target.value)} placeholder="150" />
+                        <Field label={`Incentive Rate (BPS)${hasFeeConfig ? ` — current: ${poolConfig!.bonusBps}` : ""}`}>
+                            <input type="number" value={bonusBps} onChange={(e) => setBonusBps(e.target.value)} placeholder={poolConfig?.bonusBps || "150"} />
                         </Field>
                     </div>
                 </Row>
-                <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={handleInitFeeConfig} style={{ flex: 1 }}>INIT PRICING</button>
-                    <button onClick={handleUpdateFeeConfig} style={{ flex: 1 }}>UPDATE</button>
-                </div>
+                {hasFeeConfig ? (
+                    <button onClick={handleUpdateFeeConfig} style={{ width: "100%" }}>UPDATE DYNAMIC PRICING</button>
+                ) : (
+                    <button onClick={handleInitFeeConfig} style={{ width: "100%" }}>INIT DYNAMIC PRICING</button>
+                )}
+
+                {/* Profitability forecast */}
+                {poolConfig && (() => {
+                    const resA = Number(poolConfig.reserveA);
+                    const resB = Number(poolConfig.reserveB);
+                    const tA = Number(poolConfig.targetA) || 1;
+                    const tB = Number(poolConfig.targetB) || 1;
+                    const fee = Number(feeBps);
+                    const surge = Number(surgeBps);
+                    const bonus = Number(bonusBps);
+
+                    // Current imbalance (cross-product, mirrors contract)
+                    const actualCross = resA * tB;
+                    const targetCross = resB * tA;
+                    const crossSum = actualCross + targetCross;
+                    const imbalBps = crossSum > 0 ? Math.abs(actualCross - targetCross) * 10000 / crossSum : 0;
+
+                    // Effective fee/bonus rates at current imbalance (in bps)
+                    const surgeFee = imbalBps * surge / 10000;
+                    const worseningFeeBps = fee + surgeFee;
+                    const rebalFeeBps = fee;
+                    const bonusRate = imbalBps * bonus / 10000;
+                    // Bonus capped at 3x the fee (normalized to output units via target ratio)
+                    const bonusCapBps = rebalFeeBps * 3;
+                    const bonusPaidBps = Math.min(bonusRate, bonusCapBps);
+
+                    // Net per trade: average of worsening fee earned and (rebal fee earned - bonus paid)
+                    const roundTripBps = worseningFeeBps + rebalFeeBps - bonusPaidBps;
+                    const netPct = (roundTripBps / 2 / 100).toFixed(2);
+
+                    const isProfitable = roundTripBps > 0;
+                    const isBreakEven = roundTripBps === 0;
+
+                    return (
+                        <div style={{
+                            marginTop: 10, padding: "8px 10px",
+                            background: isProfitable ? "rgba(0, 200, 100, 0.04)" : "rgba(255, 50, 50, 0.04)",
+                            border: `1px solid ${isProfitable ? "rgba(0, 200, 100, 0.15)" : "rgba(255, 50, 50, 0.15)"}`,
+                            fontSize: 10, fontFamily: '"Frontier Disket Mono", monospace',
+                        }}>
+                            <div style={{ color: "#555", letterSpacing: "0.1em", marginBottom: 6, fontSize: 9 }}>PROFIT FORECAST</div>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                                <span style={{ color: "var(--text-muted)" }}>Worsening trade fee</span>
+                                <span style={{ color: "var(--green)" }}>+{(worseningFeeBps / 100).toFixed(2)}%</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                                <span style={{ color: "var(--text-muted)" }}>Rebalancing trade fee</span>
+                                <span style={{ color: "var(--green)" }}>+{(rebalFeeBps / 100).toFixed(2)}%</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                                <span style={{ color: "var(--text-muted)" }}>Incentive payout</span>
+                                <span style={{ color: bonusPaidBps > 0 ? "var(--red)" : "var(--text-muted)" }}>-{(bonusPaidBps / 100).toFixed(2)}%</span>
+                            </div>
+                            <div style={{ height: 1, background: "rgba(255,255,255,0.05)", margin: "5px 0" }} />
+                            <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <span style={{ color: "var(--text-bright)" }}>Net per trade (avg)</span>
+                                <span style={{
+                                    fontWeight: 700,
+                                    color: isProfitable ? "var(--green)" : isBreakEven ? "var(--text-muted)" : "var(--red)",
+                                }}>
+                                    {isProfitable ? "+" : ""}{netPct}%
+                                </span>
+                            </div>
+                            {imbalBps > 0 && (
+                                <div style={{ color: "#444", marginTop: 4, fontSize: 9 }}>
+                                    at {(imbalBps / 100).toFixed(1)}% current imbalance
+                                </div>
+                            )}
+                        </div>
+                    );
+                })()}
             </Section>
 
             {/* Revenue */}
             <Section title="Revenue" defaultOpen={false}>
                 {poolConfig && (
                     <>
+                        {/* Profit summary */}
                         <div style={{
-                            fontSize: 11, padding: "10px 10px",
-                            background: "var(--bg-input)", border: "1px solid var(--border)",
+                            padding: "10px 12px", marginBottom: 10,
+                            background: "rgba(0, 212, 255, 0.04)", border: "1px solid rgba(0, 212, 255, 0.15)",
                             fontFamily: '"Frontier Disket Mono", monospace',
-                            marginBottom: 10,
                         }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                                <span style={{ color: "var(--text-muted)" }}>Revenue {tokenAName}</span>
-                                <span>{poolConfig.feePoolA}</span>
-                            </div>
-                            <div style={{ display: "flex", justifyContent: "space-between" }}>
-                                <span style={{ color: "var(--text-muted)" }}>Revenue {tokenBName}</span>
-                                <span>{poolConfig.feePoolB}</span>
+                            <div style={{ fontSize: 9, color: "#555", letterSpacing: "0.1em", marginBottom: 6 }}>UNCOLLECTED PROFIT</div>
+                            <div style={{ display: "flex", gap: 16 }}>
+                                {Number(poolConfig.feePoolA) > 0 && (
+                                    <div>
+                                        <span style={{ fontSize: 18, fontWeight: 700, color: "var(--green)" }}>{Number(poolConfig.feePoolA).toLocaleString()}</span>
+                                        <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: 4 }}>{tokenAName}</span>
+                                    </div>
+                                )}
+                                {Number(poolConfig.feePoolB) > 0 && (
+                                    <div>
+                                        <span style={{ fontSize: 18, fontWeight: 700, color: "var(--green)" }}>{Number(poolConfig.feePoolB).toLocaleString()}</span>
+                                        <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: 4 }}>{tokenBName}</span>
+                                    </div>
+                                )}
+                                {Number(poolConfig.feePoolA) === 0 && Number(poolConfig.feePoolB) === 0 && (
+                                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No fees collected yet</div>
+                                )}
                             </div>
                         </div>
 
@@ -392,36 +571,6 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
                 )}
             </Section>
 
-            {/* Create pool — one-time action, collapsed by default */}
-            <Section title="Establish Market" defaultOpen={false}>
-                <Row>
-                    <div style={{ flex: 1 }}>
-                        <Field label="Token A ID"><input value={typeIdA} onChange={(e) => setTypeIdA(e.target.value)} /></Field>
-                    </div>
-                    <div style={{ flex: 1 }}>
-                        <Field label="Token B ID"><input value={typeIdB} onChange={(e) => setTypeIdB(e.target.value)} /></Field>
-                    </div>
-                </Row>
-                <Row>
-                    <div style={{ flex: 1 }}>
-                        <Field label="Initial Reserve A"><input type="number" value={initReserveA} onChange={(e) => setInitReserveA(e.target.value)} /></Field>
-                    </div>
-                    <div style={{ flex: 1 }}>
-                        <Field label="Initial Reserve B"><input type="number" value={initReserveB} onChange={(e) => setInitReserveB(e.target.value)} /></Field>
-                    </div>
-                </Row>
-                <Row>
-                    <div style={{ flex: 1 }}>
-                        <Field label="Amplification"><input type="number" value={amp} onChange={(e) => setAmp(e.target.value)} /></Field>
-                    </div>
-                    <div style={{ flex: 1 }}>
-                        <Field label="Fee (BPS)"><input type="number" value={feeBps} onChange={(e) => setFeeBps(e.target.value)} /></Field>
-                    </div>
-                </Row>
-                <Field label="Banner"><input value={banner} onChange={(e) => setBanner(e.target.value)} /></Field>
-                <button onClick={handleCreatePool} className="primary" style={{ width: "100%", marginTop: 4 }}>ESTABLISH MARKET</button>
-            </Section>
-
             {/* Config — rarely changed */}
             <Section title="Terminal Config" defaultOpen={false}>
                 <Field label="AMM Package ID">
@@ -438,7 +587,39 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig, onPoolCreat
                         <Field label="AdminCap ID"><input value={adminCapId} onChange={(e) => setAdminCapId(e.target.value)} placeholder="0x..." /></Field>
                     </div>
                 </Row>
-                <button onClick={saveConfig} style={{ width: "100%" }}>SAVE CONFIG</button>
+                <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={saveConfig} style={{ flex: 1 }}>SAVE CONFIG</button>
+                    <button onClick={() => {
+                        localStorage.removeItem("amm_pool_id");
+                        localStorage.removeItem("amm_pool_isv");
+                        localStorage.removeItem("amm_admin_cap_id");
+                        localStorage.removeItem("amm_package_id");
+                        localStorage.removeItem("amm_original_package_id");
+                        queryClient.invalidateQueries({ queryKey: ["ssu-config"] });
+                        queryClient.invalidateQueries({ queryKey: ["amm-pool"] });
+                        showStatus("Pool config cleared. Rediscovering...");
+                        setTimeout(() => window.location.reload(), 1000);
+                    }} style={{ flex: 1, background: "var(--red)", color: "#fff" }}>RESET POOL CONFIG</button>
+                </div>
+                <div style={{ fontSize: 10, marginTop: 8, wordBreak: "break-all", color: "var(--text-muted)" }}>
+                    <div>Wallet: {account?.address || "not connected"}</div>
+                    <div>Active Pool: {poolCtx.poolId}</div>
+                    <div style={{ color: resolvedAdminCap ? "var(--green)" : "var(--red)" }}>
+                        AdminCap: {resolvedAdminCap || "none found for this pool"}
+                    </div>
+                    {poolConfig && (
+                        <div style={{ marginTop: 4, padding: "4px 0", borderTop: "1px solid #333" }}>
+                            <div>Reserves: {poolConfig.reserveA}/{poolConfig.reserveB}</div>
+                            <div style={{ color: poolConfig.targetA === "1" ? "var(--red)" : "var(--green)" }}>
+                                Targets: {poolConfig.targetA}/{poolConfig.targetB}
+                                {poolConfig.targetA === "1" && " (FALLBACK — old pool, no targets)"}
+                            </div>
+                            <div>Amp: {poolConfig.amp} | Fee: {poolConfig.feeBps}bps | Surge: {poolConfig.surgeBps}bps</div>
+                            <div>Pkg: {getAmmPackageId().slice(0, 12)}... | Orig: {getAmmOriginalPackageId().slice(0, 12)}...</div>
+                            <div>{poolConfig._debugErr ? `Err: ${poolConfig._debugErr}` : ""}</div>
+                        </div>
+                    )}
+                </div>
             </Section>
 
             {/* Status / errors */}
