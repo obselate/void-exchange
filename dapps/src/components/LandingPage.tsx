@@ -72,6 +72,34 @@ export function LandingPage({ onConnect, market }: Props) {
                 </button>
             </div>
 
+            {/* How to Get Started */}
+            <details className="terminal-panel muted getting-started" style={{ marginBottom: 40 }}>
+                <summary data-label="How to Get Started" style={{
+                    cursor: "pointer", fontSize: 12, letterSpacing: "2px",
+                    color: "var(--accent)", padding: "8px 0", listStyle: "none",
+                }}>
+                    <span style={{ marginRight: 8 }}>&#9670;</span>HOW TO GET STARTED
+                </summary>
+                <ol style={{
+                    margin: "12px 0 4px", paddingLeft: 20,
+                    fontSize: 11, color: "#999", lineHeight: 2.2, letterSpacing: "0.5px",
+                }}>
+                    <li>Online a <strong style={{ color: "#ccc" }}>Smart Storage Unit</strong> at your network node</li>
+                    <li>Copy the <strong style={{ color: "#ccc" }}>Assembly ID</strong> from the SSU</li>
+                    <li>Open <strong style={{ color: "#ccc" }}>Edit Assembly</strong> on the SSU</li>
+                    <li>Set the dApp link to: <code style={{
+                        color: "var(--accent)", background: "rgba(232,122,30,0.08)",
+                        padding: "2px 6px", fontSize: 10,
+                    }}>https://void-exchange.com/?ssu=&lt;ASSEMBLY_ID&gt;</code></li>
+                    <li>Opening the dApp brings you to the <strong style={{ color: "#ccc" }}>New Market Wizard</strong></li>
+                    <li>Follow the steps to <strong style={{ color: "#ccc" }}>configure and deploy</strong> your market</li>
+                    <li>Append <code style={{
+                        color: "var(--accent)", background: "rgba(232,122,30,0.08)",
+                        padding: "2px 6px", fontSize: 10,
+                    }}>&amp;ops</code> to the link to manage your station settings</li>
+                </ol>
+            </details>
+
             {/* How Dynamic Pricing Works */}
             <div className="terminal-panel muted" data-label="How Dynamic Pricing Works" style={{ marginBottom: 40 }}>
                 <PricingRow indicator="green" label="Balanced market" value="0.5% tx tax" />

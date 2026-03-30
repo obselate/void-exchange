@@ -394,6 +394,25 @@ td:first-child { color: var(--text-muted); text-transform: uppercase; font-size:
   background: rgba(10, 13, 18, 0.4);
 }
 
+/* ═══════════ Getting Started ═══════════ */
+
+details.getting-started summary {
+  list-style: none;
+}
+details.getting-started summary::-webkit-details-marker {
+  display: none;
+}
+details.getting-started summary .marker {
+  transition: transform 0.2s;
+}
+details.getting-started[open] summary .marker {
+  transform: rotate(90deg);
+}
+details.getting-started ol li::marker {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 /* ═══════════ Status Bar ═══════════ */
 .status-bar {
   position: fixed;
