@@ -9,6 +9,7 @@ export type SwapEvent = {
     fee: number;
     bonus: number;
     timestamp: number;
+    txDigest: string;
 };
 
 export function useSwapEvents(poolId: string | null) {
@@ -37,6 +38,7 @@ export function useSwapEvents(poolId: string | null) {
                             fee: Number(p.fee || 0),
                             bonus: Number(p.bonus || 0),
                             timestamp: Number(ev.timestampMs || 0),
+                            txDigest: ev.id?.txDigest || "",
                         } as SwapEvent;
                     });
             } catch {

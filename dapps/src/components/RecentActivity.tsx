@@ -28,8 +28,8 @@ export function RecentActivity({ poolId, typeIdA, typeIdB }: Props) {
                     const time = ev.timestamp
                         ? new Date(ev.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                         : "—";
-                    return (
-                        <div key={`${ev.timestamp}-${ev.direction}-${ev.amountIn}`} className="activity-row">
+                    const row = (
+                        <>
                             <span className="activity-time">{time}</span>
                             <span className={`activity-type ${isSellA ? "sell" : "buy"}`}>
                                 {isSellA ? "SELL" : "BUY"}
@@ -42,6 +42,21 @@ export function RecentActivity({ poolId, typeIdA, typeIdB }: Props) {
                             {ev.bonus > 0 && (
                                 <span className="activity-bonus">+{ev.bonus} bonus</span>
                             )}
+                        </>
+                    );
+                    return ev.txDigest ? (
+                        <a
+                            key={`${ev.timestamp}-${ev.direction}-${ev.amountIn}`}
+                            className="activity-row activity-row-link"
+                            href={`https://suiscan.xyz/mainnet/tx/${ev.txDigest}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            {row}
+                        </a>
+                    ) : (
+                        <div key={`${ev.timestamp}-${ev.direction}-${ev.amountIn}`} className="activity-row">
+                            {row}
                         </div>
                     );
                 })
