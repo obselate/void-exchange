@@ -33,7 +33,8 @@ export function SwapPanel({
     const [amountStr, setAmountStr] = useState("");
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [pendingWithdraw, setPendingWithdraw] = useState<{ amount: string; token: string } | null>(null);
+    const [pendingWithdraw, setPendingWithdraw] = useState<{ amount: string; token: string; digest?: string } | null>(null);
+    const [detailsOpen, setDetailsOpen] = useState(false);
     const depthChartRef = useRef<DepthChartHandle>(null);
 
     const { signAndExecuteTransaction } = useDAppKit();
@@ -64,12 +65,12 @@ export function SwapPanel({
         setError(null);
         setPendingWithdraw(null);
         try {
-            await execTx(
+            const result = await execTx(
                 signAndExecuteTransaction,
                 () => buildSwapTx(poolCtx, ssuCtx, { typeIdIn, amountIn: capturedAmountIn, minOut, typeIdOut, totalOutput: capturedTotalOutput }),
                 { label: "swap" },
             );
-            setPendingWithdraw({ amount: capturedQuote.totalOutput.toString(), token: outLabel });
+            setPendingWithdraw({ amount: capturedQuote.totalOutput.toString(), token: outLabel, digest: result.digest });
             // Flash the depth chart — compute reserve deltas
             const isAForB = capturedDirection === "a_for_b";
             const deltaA = isAForB ? Number(capturedAmountIn) : -Number(capturedQuote.totalOutput);
@@ -150,66 +151,85 @@ export function SwapPanel({
                     )}
                 </div>
 
-                {/* Order Preview */}
-                {amountIn > 0n && quote && (
-                    <div style={{
-                        border: "1px solid rgba(232, 122, 30, 0.1)",
-                        padding: 12, marginBottom: 12,
-                        background: "rgba(10, 13, 18, 0.6)",
-                    }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
-                            <span style={{ color: "#666" }}>You send</span>
-                            <span style={{ color: "var(--text-bright)", fontWeight: 500 }}>{amountIn.toString()} {inLabel}</span>
-                        </div>
-                        <div style={{ height: 1, background: "rgba(232, 122, 30, 0.1)", margin: "8px 0" }} />
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
-                            <span style={{ color: "#666" }}>You receive</span>
-                            <span style={{
-                                color: "#fff", fontWeight: 500, fontSize: 16,
-                                fontFamily: '"Frontier Disket Mono", monospace',
-                            }}>{quote.totalOutput.toString()} {outLabel}</span>
-                        </div>
-                        <div style={{ height: 1, background: "rgba(232, 122, 30, 0.1)", margin: "8px 0" }} />
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
-                            <span style={{ color: "#666" }}>Tx Tax</span>
-                            <span style={{ color: "var(--text-bright)", fontWeight: 500 }}>
-                                {quote.feeAmount.toString()} ({(Number(quote.effectiveFeeBps) / 100).toFixed(1)}%)
-                            </span>
-                        </div>
-                        {!quote.isRebalancing && quote.effectiveFeeBps > BigInt(poolConfig.feeBps) && (
-                            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
-                                <span style={{ color: "#666" }}>Scarcity Surcharge</span>
-                                <span style={{ color: "var(--red)", fontWeight: 500 }}>
-                                    +{(Number(quote.effectiveFeeBps - BigInt(poolConfig.feeBps)) / 100).toFixed(1)}%
-                                </span>
+                {/* Minimum input hint — shown when no quote but we can compute minimum */}
+                {amountIn > 0n && !quote && (() => {
+                    // Compute minInput independently for hint display
+                    const isAForB = direction === "a_for_b";
+                    const resIn = BigInt(isAForB ? poolConfig.reserveA : poolConfig.reserveB);
+                    const baseFee = BigInt(poolConfig.feeBps);
+                    const minNeeded = baseFee > 0n ? (10_000n / (10_000n - baseFee)) + 1n : 1n;
+                    if (amountIn < minNeeded || amountIn < resIn / 10_000n) {
+                        return (
+                            <div className="swap-min-hint">
+                                Amount too small to produce output. Try a larger amount.
                             </div>
-                        )}
-                        {quote.bonus > 0n && (
-                            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
-                                <span style={{ color: "#666" }}>Supply Incentive</span>
-                                <span style={{ color: "var(--green)", fontWeight: 500 }}>+{quote.bonus.toString()} {outLabel}</span>
-                            </div>
-                        )}
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
-                            <span style={{ color: "#666" }}>Market Impact</span>
-                            <span style={{ color: "var(--text-bright)", fontWeight: 500 }}>
-                                {(Number(quote.priceImpactBps) / 100).toFixed(1)}%
-                            </span>
-                        </div>
-                    </div>
-                )}
+                        );
+                    }
+                    return null;
+                })()}
 
-                {/* Context message */}
-                {amountIn > 0n && quote && quote.isRebalancing && (
-                    <div className="order-context bonus">
-                        <span style={{ fontSize: 14, flexShrink: 0 }}>+</span>
-                        <span>This trade restores balance. Supply incentive earned.</span>
-                    </div>
-                )}
-                {amountIn > 0n && quote && !quote.isRebalancing && quote.priceImpactBps > 500n && (
-                    <div className="order-context warning">
-                        <span style={{ fontSize: 14, flexShrink: 0 }}>!</span>
-                        <span>This trade increases imbalance. Scarcity surcharge applied.</span>
+                {/* Compact order preview */}
+                {amountIn > 0n && quote && (
+                    <div className="swap-receipt">
+                        {/* One-line summary */}
+                        <div className="swap-receipt-summary">
+                            <span className="swap-receipt-label">Receive</span>
+                            <span className="swap-receipt-output">{quote.totalOutput.toString()} {outLabel}</span>
+                            <span className="swap-receipt-for">for {amountIn.toString()} {inLabel}</span>
+                            <span className="swap-receipt-fee">
+                                &minus; {quote.feeAmount.toString()} fee
+                                {quote.bonus > 0n && <span className="swap-receipt-bonus"> + {quote.bonus.toString()} bonus</span>}
+                            </span>
+                        </div>
+
+                        {/* Expandable detail breakdown */}
+                        <button
+                            className="swap-receipt-toggle"
+                            onClick={() => setDetailsOpen(o => !o)}
+                            type="button"
+                        >
+                            {detailsOpen ? "hide details" : "details"}
+                            <span className={`swap-receipt-chevron ${detailsOpen ? "open" : ""}`}>&#x25B8;</span>
+                        </button>
+
+                        {detailsOpen && (
+                            <div className="swap-receipt-details">
+                                <div className="swap-receipt-row">
+                                    <span>Tx Tax</span>
+                                    <span>{quote.feeAmount.toString()} ({(Number(quote.effectiveFeeBps) / 100).toFixed(1)}%)</span>
+                                </div>
+                                {!quote.isRebalancing && quote.effectiveFeeBps > BigInt(poolConfig.feeBps) && (
+                                    <div className="swap-receipt-row">
+                                        <span>Scarcity Surcharge</span>
+                                        <span style={{ color: "var(--red)" }}>
+                                            +{(Number(quote.effectiveFeeBps - BigInt(poolConfig.feeBps)) / 100).toFixed(1)}%
+                                        </span>
+                                    </div>
+                                )}
+                                {quote.bonus > 0n && (
+                                    <div className="swap-receipt-row">
+                                        <span>Supply Incentive</span>
+                                        <span style={{ color: "var(--green)" }}>+{quote.bonus.toString()} {outLabel}</span>
+                                    </div>
+                                )}
+                                <div className="swap-receipt-row">
+                                    <span>Market Impact</span>
+                                    <span>{(Number(quote.priceImpactBps) / 100).toFixed(1)}%</span>
+                                </div>
+                                <div className="swap-receipt-row">
+                                    <span>Min Trade</span>
+                                    <span>{quote.minInput > 0n ? `${quote.minInput.toString()} ${inLabel}` : "—"}</span>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Inline context badges */}
+                        {quote.isRebalancing && (
+                            <span className="swap-receipt-badge bonus">+ rebalancing bonus</span>
+                        )}
+                        {!quote.isRebalancing && quote.priceImpactBps > 500n && (
+                            <span className="swap-receipt-badge warning">! high impact — surcharge applied</span>
+                        )}
                     </div>
                 )}
 
@@ -239,6 +259,16 @@ export function SwapPanel({
                             +{pendingWithdraw.amount} {pendingWithdraw.token}
                         </div>
                         <div className="sub">Withdraw from this SSU to your ship cargo</div>
+                        {pendingWithdraw.digest && (
+                            <a
+                                className="swap-tx-link"
+                                href={`https://suiscan.xyz/mainnet/tx/${pendingWithdraw.digest}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                View transaction &rarr; {pendingWithdraw.digest.slice(0, 8)}...{pendingWithdraw.digest.slice(-6)}
+                            </a>
+                        )}
                         <button onClick={() => setPendingWithdraw(null)} style={{ width: "100%" }}>
                             CONFIRM
                         </button>
