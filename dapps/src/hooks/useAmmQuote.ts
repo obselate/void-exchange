@@ -9,6 +9,7 @@ export type SwapQuote = {
     totalOutput: bigint;
     priceImpactBps: bigint;
     maxInput: bigint;
+    minInput: bigint;
     isRebalancing: boolean;
 };
 
@@ -196,6 +197,25 @@ export function useAmmQuote(
             }
         }
 
+        // Min input: smallest amount that produces >= 1 unit of output
+        let minLo = 1n;
+        let minHi = reserveIn;
+        let minBest = 0n;
+        for (let i = 0; i < 50; i++) {
+            if (minLo > minHi) break;
+            const mid = minLo + (minHi - minLo) / 2n;
+            const { fee: mFee } = computeFee(mid, baseFee, imbalanceBps, isWorsening, surgeBps);
+            const mNet = mid - mFee;
+            if (mNet <= 0n) { minLo = mid + 1n; continue; }
+            const mOut = stableOutput(reserveIn, reserveOut, amp, mNet, targetIn, targetOut);
+            if (mOut >= 1n && mOut < reserveOut) {
+                minBest = mid;
+                minHi = mid - 1n;
+            } else {
+                minLo = mid + 1n;
+            }
+        }
+
         return {
             amountOut,
             feeAmount,
@@ -204,6 +224,7 @@ export function useAmmQuote(
             totalOutput,
             priceImpactBps,
             maxInput: best,
+            minInput: minBest,
             isRebalancing,
         };
     }, [config, direction, amountIn]);
