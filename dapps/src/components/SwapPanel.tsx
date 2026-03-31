@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useDAppKit } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAmmQuote } from "../hooks/useAmmQuote";
@@ -7,6 +7,7 @@ import { buildSwapTx, type SsuContext, type PoolContext } from "../hooks/useAmmT
 import { execTx } from "../hooks/execTx";
 import type { SsuInventory } from "../hooks/useSsuInventory";
 import { MarketStatus } from "./MarketStatus";
+import type { DepthChartHandle } from "./DepthChart";
 import { RecentActivity } from "./RecentActivity";
 
 type Props = {
@@ -33,6 +34,7 @@ export function SwapPanel({
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [pendingWithdraw, setPendingWithdraw] = useState<{ amount: string; token: string } | null>(null);
+    const depthChartRef = useRef<DepthChartHandle>(null);
 
     const { signAndExecuteTransaction } = useDAppKit();
     const queryClient = useQueryClient();
@@ -68,6 +70,11 @@ export function SwapPanel({
                 { label: "swap" },
             );
             setPendingWithdraw({ amount: capturedQuote.totalOutput.toString(), token: outLabel });
+            // Flash the depth chart — compute reserve deltas
+            const isAForB = capturedDirection === "a_for_b";
+            const deltaA = isAForB ? Number(capturedAmountIn) : -Number(capturedQuote.totalOutput);
+            const deltaB = isAForB ? -Number(capturedQuote.totalOutput) : Number(capturedAmountIn);
+            depthChartRef.current?.flash(isAForB ? "a" : "b", deltaA, deltaB);
             setAmountStr("");
             onSwapComplete();
 
@@ -106,7 +113,7 @@ export function SwapPanel({
 
     return (
         <>
-            <MarketStatus poolConfig={poolConfig} />
+            <MarketStatus ref={depthChartRef} poolConfig={poolConfig} />
 
             <div className="terminal-panel" data-label="Place Order">
                 {/* Direction toggle */}
