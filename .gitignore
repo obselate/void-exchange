@@ -16,7 +16,14 @@ deployments/*
 test-resources.json
 
 dapps/frontend
+dapps/dist/
 .DS_Store
 
 .pnpm-store/
 move-contracts/**/build/**/
+
+# Tooling / session directories
+.claude/
+.planning/
+.superpowers/
+.playwright-mcp/
