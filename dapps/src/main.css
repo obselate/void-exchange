@@ -485,6 +485,133 @@ details.getting-started ol li::marker {
 .depth-label-a { color: var(--accent); }
 .depth-label-b { color: var(--cyan); }
 
+/* ═══════════ Depth Chart Enhanced ═══════════ */
+.depth-chart canvas {
+  display: block;
+  width: 100%;
+  height: 90px;
+  border-bottom: 1px solid var(--border);
+}
+
+.depth-chart-labels {
+  position: relative;
+}
+
+.depth-label-tag {
+  display: inline-block;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  padding: 1px 5px;
+  border-radius: 2px;
+  margin-left: 6px;
+  vertical-align: middle;
+  transition: all 0.5s;
+}
+
+.depth-label-tag.over {
+  background: rgba(232, 122, 30, 0.15);
+  color: var(--accent);
+}
+
+.depth-label-tag.over.cyan-side {
+  background: rgba(0, 212, 255, 0.1);
+  color: var(--cyan);
+}
+
+.depth-label-tag.scarce {
+  background: rgba(0, 212, 255, 0.1);
+  color: var(--cyan);
+}
+
+.depth-label-tag.scarce.orange-side {
+  background: rgba(232, 122, 30, 0.1);
+  color: var(--accent);
+}
+
+.depth-label-tag.balanced {
+  background: rgba(0, 255, 136, 0.1);
+  color: var(--green);
+}
+
+/* Value delta floaters */
+.depth-label-delta {
+  position: absolute;
+  font-family: "Frontier Disket Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  opacity: 0;
+  top: -14px;
+}
+
+.depth-label-delta.left { left: 0; }
+.depth-label-delta.right { right: 0; }
+
+.depth-label-delta.active {
+  animation: deltaFloat 1.2s ease-out forwards;
+}
+
+@keyframes deltaFloat {
+  0% { opacity: 1; transform: translateY(0); }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-20px); }
+}
+
+/* Status badge (next to ratio) */
+.depth-status-badge {
+  display: inline-block;
+  font-family: "Frontier Disket Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-left: 10px;
+  vertical-align: middle;
+  transition: all 0.6s;
+}
+
+.depth-status-badge.imbalanced {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid rgba(255, 51, 85, 0.2);
+}
+
+.depth-status-badge.balanced {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid rgba(0, 255, 136, 0.25);
+  text-shadow: 0 0 8px var(--green-glow);
+}
+
+/* Panel glow states */
+.terminal-panel.glow-orange {
+  border-color: rgba(232, 122, 30, var(--glow-alpha, 0.2));
+  box-shadow: 0 0 var(--glow-size, 16px) rgba(232, 122, 30, var(--glow-shadow, 0.05));
+}
+
+.terminal-panel.glow-orange[data-label]::before {
+  color: rgba(232, 122, 30, var(--glow-label, 0.5));
+}
+
+.terminal-panel.glow-cyan {
+  border-color: rgba(0, 212, 255, var(--glow-alpha, 0.2));
+  box-shadow: 0 0 var(--glow-size, 16px) rgba(0, 212, 255, var(--glow-shadow, 0.05));
+}
+
+.terminal-panel.glow-cyan[data-label]::before {
+  color: rgba(0, 212, 255, var(--glow-label, 0.5));
+}
+
+.terminal-panel.glow-green {
+  border-color: rgba(0, 255, 136, 0.25);
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.06);
+}
+
+.terminal-panel.glow-green[data-label]::before {
+  color: rgba(0, 255, 136, 0.5);
+}
+
 /* ═══════════ Order Context ═══════════ */
 .order-context {
   display: flex;
