@@ -1,9 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Void Exchange" width="280" />
-</p>
-
-<p align="center">
-  <img src="docs/banner.png" alt="Void Exchange Banner" width="100%" />
+  <img src="docs/banner.png" alt="Void Exchange" width="100%" />
 </p>
 
 # Void Exchange
