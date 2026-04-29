@@ -7,20 +7,20 @@ see [`roadmap.md`](./roadmap.md).
 ## Repo layout
 
 ```
-move-contracts/      # Sui Move packages (amm_extension is the production AMM)
+move-contracts/      # Sui Move packages
   amm_extension/
     sources/amm.move # The AMM. Single Move module today.
     tests/           # `sui move test` runs these
-ts-scripts/          # Operational scripts (publish, authorize, etc.)
+ts-scripts/          # Operational scripts (authorize, etc.)
   lib/               # Shared Sui workflow library — import from here.
-  utils/             # Legacy helpers used by smart-gate scripts (Phase 1
-                     # will fold these into lib/).
-  amm_extension/     # AMM-specific scripts (currently only authorize-amm.ts)
-  smart_gate_extension/
-  helpers/
+  utils/             # Legacy helpers (will fold into lib/ in Phase 1).
+  amm_extension/     # AMM-specific scripts (currently authorize-amm.ts)
+  helpers/           # Thin wrappers over world-contracts types.
 dapps/               # React + Vite frontend. See dapps/README.md.
 docs/                # Long-form docs.
 scripts/             # Shell scripts (lint-move, test-move).
+setup-world/         # Bootstrap a world for local testing.
+docker/              # Containerized dev environment.
 ```
 
 ## Toolchain
@@ -95,12 +95,10 @@ pnpm fmt:check       # CI-equivalent check
 ### Operational scripts
 
 Each script is `tsx ts-scripts/<extension>/<name>.ts` and reads its config
-from `.env`. The `package.json` `scripts` block exposes the common ones:
+from `.env`. The `package.json` `scripts` block exposes the named ones:
 
 ```sh
-pnpm authorise-storage-unit-extension
-pnpm configure-rules
-# etc.
+pnpm authorize-amm   # authorize the AMMAuth extension on a Storage Unit
 ```
 
 A new script should:

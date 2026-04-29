@@ -1,6 +1,11 @@
 # Builder flow: Docker
 
-Run the full builder-scaffold flow inside the Sui dev container — no Sui tools needed on your host. The same steps work for any extension example (**smart_gate_extension**, **storage_unit_extension**, or your own); 
+> **Stale — see [`development.md`](./development.md).** Inherited from the
+> `builder-scaffold` template; the example extensions referenced below
+> (`smart_gate_extension`, `storage_unit_extension`) no longer ship with
+> this repo. World-deployment steps still apply.
+
+Run the world-deployment flow inside the Sui dev container — no Sui tools needed on your host. 
 
 ## Prerequisites
 

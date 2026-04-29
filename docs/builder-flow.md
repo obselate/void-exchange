@@ -1,6 +1,13 @@
 # Builder flow
 
-End-to-end flow to test builder-scaffold against world-contracts.
+> **Stale.** This doc was inherited from the `builder-scaffold` template and
+> still references example extensions (`smart_gate_extension`,
+> `storage_unit_extension`) that no longer ship with this repo. The Void
+> Exchange dev workflow lives in [`development.md`](./development.md);
+> this doc covers world-contracts deployment only and is kept until
+> rewritten.
+
+End-to-end flow to deploy world-contracts and the Void Exchange AMM.
 
 **Choose one path, then follow that guide’s steps from start to finish:**
 

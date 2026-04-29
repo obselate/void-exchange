@@ -1,35 +1,54 @@
 # TypeScript scripts
 
-Interact with your deployed extension contracts from TypeScript.
+Operational scripts for the Void Exchange AMM. The scripts are CLI entry
+points that build a Sui Programmable Transaction Block (PTB), sign it with
+a key from the environment, and submit it.
 
 ## Prerequisites
 
-1. World contracts deployed and configured (see [setup-world](../setup-world/readme.md)), or you're building on an existing world — [building-on-existing-world](../docs/building-on-existing-world.md) guide (coming soon)
-2. In both cases: `deployments/` and `test-resources.json` for that world copied to this repo's root
-3. Your extension package published (e.g. `smart_gate_extension`)
+1. World contracts deployed and configured — see
+   [`setup-world/`](../setup-world/readme.md).
+2. AMM extension package published — see
+   [`move-contracts/amm_extension`](../move-contracts/amm_extension/).
+3. `deployments/` artifacts and `test-resources.json` (if using the world
+   helpers) copied to this repo's root.
 
 ## Setup
 
 ```bash
 # From repo root
-cp .env.example .env    # fill in keys, WORLD_PACKAGE_ID, BUILDER_PACKAGE_ID
+cp .env.example .env    # fill in keys + package IDs
 pnpm install
 ```
 
-Set `WORLD_PACKAGE_ID`, `BUILDER_PACKAGE_ID`, and other environment variables in `.env` from your extension package deployment output.
+Required env vars per script are documented at the top of each script's
+file. Run with:
 
-For the Smart Gate example script order, see [smart_gate_extension/readme.md](./smart_gate_extension/readme.md).
+```bash
+pnpm authorize-amm                                 # named entry
+# or
+tsx ts-scripts/amm_extension/<script-name>.ts      # any script
+```
 
-## Customization
+## Layout
 
-- Edit `test-resources.json` to change item IDs, type IDs, or location hash
-- Object IDs are derived at runtime from `test-resources.json` + `extracted-object-ids.json` using `deriveObjectId()`
+- [`lib/`](./lib/) — Shared, framework-neutral Sui workflow library
+  (typed client, executor with structured Move-abort errors, env loader,
+  event helpers). **Import new code from here.**
+- `amm_extension/` — AMM-specific scripts.
+- `helpers/` — Thin wrappers over world-contracts types
+  (Storage Unit OwnerCap lookup, etc.).
+- `utils/` — Legacy helpers retained until Phase 1 folds them into `lib/`.
 
-## Adding your own scripts
+## Adding a new script
 
-Use the existing scripts as templates. The key utilities:
-
-- `utils/helper.ts` — env config, context initialization, world config hydration
-- `utils/derive-object-id.ts` — derive Sui object IDs from game item IDs
-- `utils/proof.ts` — generate location proofs for proximity verification
-- `helpers/` — query OwnerCap objects for gates, storage units, characters
+1. Import primitives from [`lib/`](./lib/) (`createSuiClient`,
+   `keypairFromEnv`, `executeTx`, `loadEnv`, `findEvent`,
+   `findCreatedObject`).
+2. Declare every env var the script reads via `loadEnv([...])` so a
+   misconfigured environment fails up front with one clear message.
+3. Always go through `executeTx` rather than calling
+   `signAndExecuteTransaction` directly — it parses Move aborts into a
+   typed `TransactionExecutionError` with the module / function / abort
+   code.
+4. Document required env vars in the file header.

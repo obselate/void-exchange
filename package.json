@@ -1,5 +1,5 @@
 {
-  "name": "builder-scaffold",
+  "name": "void-exchange",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.17.0",
@@ -10,12 +10,7 @@
     "lint": "sh scripts/lint-move.sh",
     "test:move": "sh scripts/test-move.sh",
     "typecheck": "tsc --noEmit",
-    "configure-rules": "tsx ts-scripts/smart_gate_extension/configure-rules.ts",
-    "authorise-gate-extension": "tsx ts-scripts/smart_gate_extension/authorise-gate-extension.ts",
-    "authorise-storage-unit-extension": "tsx ts-scripts/smart_gate_extension/authorise-storage-unit-extension.ts",
-    "issue-tribe-jump-permit": "tsx ts-scripts/smart_gate_extension/issue-tribe-jump-permit.ts",
-    "jump-with-permit": "tsx ts-scripts/smart_gate_extension/jump-with-permit.ts",
-    "collect-corpse-bounty": "tsx ts-scripts/smart_gate_extension/collect-corpse-bounty.ts"
+    "authorize-amm": "tsx ts-scripts/amm_extension/authorize-amm.ts"
   },
   "dependencies": {
     "@mysten/sui": "^2.0.0",
