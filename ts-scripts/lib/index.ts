@@ -16,4 +16,6 @@ export type { ExecutedTransaction, MoveAbortInfo } from "./sui/execute";
 
 export { findEvent, findEvents, findCreatedObject, findCreatedObjects } from "./sui/events";
 
+export { getInitialSharedVersion } from "./sui/object";
+
 export { requireEnv, optionalEnv, loadEnv } from "./env";

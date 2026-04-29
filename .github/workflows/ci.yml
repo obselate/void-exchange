@@ -6,14 +6,14 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A single Sui CLI version is the source of truth for both lint and test jobs
-# (they target Move packages under move-contracts/). Bump deliberately and
-# regenerate bindings + re-run tests when changing.
+# A single Sui CLI version is the source of truth for the move and codegen
+# jobs (they target Move packages under move-contracts/). Bump deliberately:
+# regenerate bindings (`pnpm codegen`) and re-run Move tests after changing.
 env:
   SUI_RELEASE_TAG: mainnet-v1.70.2
   # Tag of evefrontier/world-contracts that void-exchange's Move packages
-  # depend on. Mirrored from docs/builder-flow-host.md, where humans clone
-  # the same tag manually as a sibling directory.
+  # depend on. Mirrored from docs/development.md, where humans clone the
+  # same tag manually as a sibling directory.
   WORLD_CONTRACTS_REF: v0.0.18
 
 jobs:
@@ -53,11 +53,9 @@ jobs:
       - name: Verify Sui CLI
         run: sui --version
 
-      # Bootstrap a default ~/.sui/sui_config/client.yaml. The first `sui`
-      # subcommand to touch client config prompts interactively to create it,
-      # which deadlocks in CI. We force-feed `yes` once so subsequent calls
-      # find an existing config. The generated keypair is unused — Move
-      # build / test never sign or send transactions.
+      # Bootstrap ~/.sui/sui_config/client.yaml. The first `sui` subcommand
+      # to touch client config prompts interactively, which deadlocks in CI.
+      # `yes` accepts the prompt; the generated keypair is unused.
       - name: Bootstrap Sui client config
         run: yes | sui client envs >/dev/null 2>&1 || true
 
@@ -68,6 +66,63 @@ jobs:
       - name: Move test
         working-directory: void-exchange
         run: sh scripts/test-move.sh
+
+  codegen:
+    name: Codegen drift
+    runs-on: ubuntu-latest
+    steps:
+      # @mysten/codegen reads the Move source for both packages, so we need
+      # the same world-contracts sibling layout as the Move job.
+      - name: Checkout void-exchange
+        uses: actions/checkout@v4
+        with:
+          path: void-exchange
+
+      - name: Checkout world-contracts
+        uses: actions/checkout@v4
+        with:
+          repository: evefrontier/world-contracts
+          ref: ${{ env.WORLD_CONTRACTS_REF }}
+          path: world-contracts
+
+      - name: Install Sui CLI
+        run: |
+          set -euo pipefail
+          tarball="sui-${SUI_RELEASE_TAG}-ubuntu-x86_64.tgz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/MystenLabs/sui/releases/download/${SUI_RELEASE_TAG}/${tarball}"
+          mkdir -p "$HOME/.sui-bin"
+          tar -xzf "$tarball" -C "$HOME/.sui-bin"
+          echo "$HOME/.sui-bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap Sui client config
+        run: yes | sui client envs >/dev/null 2>&1 || true
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: void-exchange/.nvmrc
+          cache: pnpm
+          cache-dependency-path: void-exchange/pnpm-lock.yaml
+
+      - name: Install workspace deps
+        working-directory: void-exchange
+        run: pnpm install --frozen-lockfile
+
+      - name: Regenerate bindings
+        working-directory: void-exchange
+        run: pnpm codegen
+
+      # Fail if the regenerated output differs from what's committed.
+      # `git diff --exit-code` returns non-zero on any diff.
+      - name: Verify no drift
+        working-directory: void-exchange
+        run: |
+          if ! git diff --exit-code -- ts-scripts/lib/amm/generated; then
+            echo "::error::ts-scripts/lib/amm/generated is out of sync with the Move source. Run 'pnpm codegen' locally and commit the result."
+            exit 1
+          fi
 
   typescript:
     name: TypeScript (typecheck + format)
@@ -87,5 +142,8 @@ jobs:
       - name: Format check
         run: pnpm fmt:check
 
-      - name: Typecheck
+      - name: Typecheck (root)
         run: pnpm typecheck
+
+      - name: Typecheck (dapp)
+        run: pnpm --filter ./dapps exec tsc --noEmit

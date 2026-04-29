@@ -1,345 +1,350 @@
+/**
+ * AMM transaction builders for the dapp.
+ *
+ * Thin facade over `ts-scripts/lib/amm`:
+ *  - Compound PTBs come from `lib/amm/operations` (one source of truth
+ *    shared with the CLI scripts).
+ *  - Single-call admin operations call the generated `amm` bindings
+ *    directly via `tx.add(amm.someCall(...))`.
+ *
+ * Per-pool package IDs are sourced from the dapp's localStorage-backed
+ * `getAmmPackageId()` / `getAmmOriginalPackageId()` (so a user with a
+ * pool deployed against an older package can still trade).
+ */
 import { Transaction } from "@mysten/sui/transactions";
-import { getAmmOriginalPackageId, getAmmPackageId, AMM_ENV_ORIGINAL_PACKAGE_ID, AMM_ENV_CURRENT_PACKAGE_ID, WORLD_PACKAGE_ID, MODULES } from "../config";
+import {
+    amm,
+    buildAuthorizeAndCreatePoolTx,
+    buildAuthorizeTx,
+    buildCreatePoolTx,
+    buildRescueItemsTx,
+    buildSeedAndInitFeeTx,
+    buildSeedTx,
+    buildSwapTx,
+    sharedRef,
+    type AmmPackageIds,
+    type PoolContext,
+    type SsuContext,
+} from "../../../ts-scripts/lib/amm";
+import {
+    AMM_ENV_CURRENT_PACKAGE_ID,
+    AMM_ENV_ORIGINAL_PACKAGE_ID,
+    WORLD_PACKAGE_ID,
+    getAmmOriginalPackageId,
+    getAmmPackageId,
+} from "../config";
 
-const STORAGE_UNIT_TYPE = `${WORLD_PACKAGE_ID}::${MODULES.STORAGE_UNIT}::StorageUnit`;
+// Re-export for callers that imported these from this module historically.
+export type { SsuContext, PoolContext };
 
-/** All SSU-specific context needed to build transactions. */
-export type SsuContext = {
-    ssuId: string;
-    ssuIsv: number;
-    characterId: string;
-    characterIsv: number;
-};
-
-/** Pool-specific context needed for pool operations. */
-export type PoolContext = {
-    poolId: string;
-    poolIsv: number;
-};
-
-function shared(tx: Transaction, objectId: string, isv: number, mutable: boolean) {
-    return tx.sharedObjectRef({ objectId, initialSharedVersion: isv, mutable });
+/** Package IDs reflecting whatever the user has selected (pool-derived
+ *  override over .env). */
+function packageIds(): AmmPackageIds {
+    return { current: getAmmPackageId(), original: getAmmOriginalPackageId() };
 }
 
-/** Add the 3-call authorize AMMAuth sequence to an existing transaction.
- *  `originalPkg` controls which deployment's AMMAuth type is authorized. */
-function addAuthorizeFragment(
-    tx: Transaction, charRef: ReturnType<typeof shared>, ssuRef: ReturnType<typeof shared>,
-    ownerCapId: string, originalPkg: string,
-) {
-    const [cap, receipt] = tx.moveCall({
-        target: `${WORLD_PACKAGE_ID}::${MODULES.CHARACTER}::borrow_owner_cap`,
-        typeArguments: [STORAGE_UNIT_TYPE],
-        arguments: [charRef, tx.object(ownerCapId)],
-    });
-    tx.moveCall({
-        target: `${WORLD_PACKAGE_ID}::${MODULES.STORAGE_UNIT}::authorize_extension`,
-        typeArguments: [`${originalPkg}::${MODULES.AMM}::AMMAuth`],
-        arguments: [ssuRef, cap],
-    });
-    tx.moveCall({
-        target: `${WORLD_PACKAGE_ID}::${MODULES.CHARACTER}::return_owner_cap`,
-        typeArguments: [STORAGE_UNIT_TYPE],
-        arguments: [charRef, cap, receipt],
+/** Package IDs forced to the .env-pinned latest deploy. Used for
+ *  operations that must run against the newest contract — pool creation
+ *  (no upgrade path) and rescue (a recovery-only entry). */
+function envPackageIds(): AmmPackageIds {
+    return { current: AMM_ENV_CURRENT_PACKAGE_ID, original: AMM_ENV_ORIGINAL_PACKAGE_ID };
+}
+
+/** Authorize AMMAuth on SSU (one-time, owner only). */
+export function buildAuthorizeTransaction(ctx: SsuContext, ownerCapId: string): Transaction {
+    return buildAuthorizeTx({
+        ssu: ctx,
+        ownerCapTicketId: ownerCapId,
+        worldPackageId: WORLD_PACKAGE_ID,
+        ammPackageIds: packageIds(),
     });
 }
 
-/** Authorize AMMAuth on SSU (one-time, owner only) */
-export function buildAuthorizeTx(ctx: SsuContext, ownerCapId: string): Transaction {
+/** Authorize + Create Pool in a single PTB. Uses .env packages — new
+ *  pools always target the latest deployment. */
+export function buildAuthorizeAndCreatePoolTransaction(
+    ctx: SsuContext,
+    ownerCapId: string,
+    pool: {
+        typeIdA: bigint;
+        typeIdB: bigint;
+        reserveA: bigint;
+        reserveB: bigint;
+        amp: bigint;
+        feeBps: bigint;
+        banner: string;
+        sender: string;
+    },
+): Transaction {
+    return buildAuthorizeAndCreatePoolTx({
+        ssu: ctx,
+        ownerCapTicketId: ownerCapId,
+        worldPackageId: WORLD_PACKAGE_ID,
+        ammPackageIds: envPackageIds(),
+        pool,
+        sender: pool.sender,
+    });
+}
+
+/** Create pool (standalone, when authorization is already done). */
+export function buildCreatePoolTransaction(
+    ctx: SsuContext,
+    pool: {
+        typeIdA: bigint;
+        typeIdB: bigint;
+        reserveA: bigint;
+        reserveB: bigint;
+        amp: bigint;
+        feeBps: bigint;
+        banner: string;
+        sender: string;
+    },
+): Transaction {
+    return buildCreatePoolTx({
+        ssu: ctx,
+        ammPackageIds: envPackageIds(),
+        pool,
+        sender: pool.sender,
+    });
+}
+
+/** Add liquidity (authorizes AMMAuth first — idempotent if already
+ *  authorized). */
+export function buildSeedTransaction(
+    pool: PoolContext,
+    ctx: SsuContext,
+    params: { adminCapId: string; ownerCapId: string; typeId: bigint; amount: number },
+): Transaction {
+    return buildSeedTx({
+        pool,
+        ssu: ctx,
+        adminCapId: params.adminCapId,
+        ownerCapTicketId: params.ownerCapId,
+        typeId: params.typeId,
+        amount: params.amount,
+        worldPackageId: WORLD_PACKAGE_ID,
+        ammPackageIds: packageIds(),
+    });
+}
+
+/** Set reserves directly (admin only). */
+export function buildSetReservesTransaction(
+    pool: PoolContext,
+    params: { adminCapId: string; reserveA: bigint; reserveB: bigint },
+): Transaction {
     const tx = new Transaction();
-    const charRef = shared(tx, ctx.characterId, ctx.characterIsv, true);
-    const ssuRef = shared(tx, ctx.ssuId, ctx.ssuIsv, true);
-    addAuthorizeFragment(tx, charRef, ssuRef, ownerCapId, getAmmOriginalPackageId());
+    tx.add(
+        amm.setReserves({
+            package: getAmmPackageId(),
+            arguments: {
+                pool: sharedRef(tx, pool.poolId, pool.poolIsv, true),
+                adminCap: tx.object(params.adminCapId),
+                reserveA: params.reserveA,
+                reserveB: params.reserveB,
+            },
+        }),
+    );
     return tx;
 }
 
-/** Authorize + Create Pool in a single PTB (one wallet prompt, one gas coin).
- *  Always uses .env packages — new pools must use the latest deployment. */
-export function buildAuthorizeAndCreatePoolTx(ctx: SsuContext, ownerCapId: string, params: {
-    typeIdA: bigint; typeIdB: bigint;
-    reserveA: bigint; reserveB: bigint;
-    amp: bigint; feeBps: bigint;
-    banner: string; sender: string;
-}): Transaction {
+/** Withdraw accumulated fees (admin only). */
+export function buildWithdrawFeesTransaction(
+    pool: PoolContext,
+    ctx: SsuContext,
+    params: { adminCapId: string; typeId: bigint; amount: bigint },
+): Transaction {
     const tx = new Transaction();
-    const ssuRef = shared(tx, ctx.ssuId, ctx.ssuIsv, true);
-    const charRef = shared(tx, ctx.characterId, ctx.characterIsv, true);
-
-    addAuthorizeFragment(tx, charRef, ssuRef, ownerCapId, AMM_ENV_ORIGINAL_PACKAGE_ID);
-
-    const adminCap = tx.moveCall({
-        target: `${AMM_ENV_CURRENT_PACKAGE_ID}::${MODULES.AMM}::create_pool`,
-        arguments: [
-            ssuRef,
-            tx.pure.u64(params.typeIdA), tx.pure.u64(params.typeIdB),
-            tx.pure.u64(params.reserveA), tx.pure.u64(params.reserveB),
-            tx.pure.u64(params.amp), tx.pure.u64(params.feeBps),
-            tx.pure.string(params.banner),
-        ],
-    });
-    tx.transferObjects([adminCap], tx.pure.address(params.sender));
+    tx.add(
+        amm.withdrawFees({
+            package: getAmmPackageId(),
+            arguments: {
+                pool: sharedRef(tx, pool.poolId, pool.poolIsv, true),
+                adminCap: tx.object(params.adminCapId),
+                storageUnit: sharedRef(tx, ctx.ssuId, ctx.ssuIsv, true),
+                character: sharedRef(tx, ctx.characterId, ctx.characterIsv, false),
+                typeId: params.typeId,
+                amount: params.amount,
+            },
+        }),
+    );
     return tx;
 }
 
-/** Create pool (standalone, for when authorization is already done).
- *  Always uses .env packages — new pools must use the latest deployment. */
-export function buildCreatePoolTx(ctx: SsuContext, params: {
-    typeIdA: bigint; typeIdB: bigint;
-    reserveA: bigint; reserveB: bigint;
-    amp: bigint; feeBps: bigint;
-    banner: string; sender: string;
-}): Transaction {
+/** Roll fees into reserves (admin only). */
+export function buildRollFeesToReservesTransaction(
+    pool: PoolContext,
+    params: { adminCapId: string; typeId: bigint; amount: bigint },
+): Transaction {
     const tx = new Transaction();
-    const adminCap = tx.moveCall({
-        target: `${AMM_ENV_CURRENT_PACKAGE_ID}::${MODULES.AMM}::create_pool`,
-        arguments: [
-            shared(tx, ctx.ssuId, ctx.ssuIsv, false),
-            tx.pure.u64(params.typeIdA), tx.pure.u64(params.typeIdB),
-            tx.pure.u64(params.reserveA), tx.pure.u64(params.reserveB),
-            tx.pure.u64(params.amp), tx.pure.u64(params.feeBps),
-            tx.pure.string(params.banner),
-        ],
-    });
-    tx.transferObjects([adminCap], tx.pure.address(params.sender));
+    tx.add(
+        amm.rollFeesToReserves({
+            package: getAmmPackageId(),
+            arguments: {
+                pool: sharedRef(tx, pool.poolId, pool.poolIsv, true),
+                adminCap: tx.object(params.adminCapId),
+                typeId: params.typeId,
+                amount: params.amount,
+            },
+        }),
+    );
     return tx;
 }
 
-/** Add liquidity (authorizes AMMAuth first — idempotent if already authorized).
- *  Character ref is mutable because authorize requires it, but add_liquidity only needs &Character. */
-export function buildSeedTx(pool: PoolContext, ctx: SsuContext, params: {
-    adminCapId: string; ownerCapId: string; typeId: bigint; amount: number;
-}): Transaction {
+/** Initialize dynamic fee config (one-time, admin only). */
+export function buildInitFeeConfigTransaction(
+    pool: PoolContext,
+    params: { adminCapId: string; surgeBps: bigint; bonusBps: bigint },
+): Transaction {
     const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    const ssuRef = shared(tx, ctx.ssuId, ctx.ssuIsv, true);
-    // Mutable needed for borrow_owner_cap; add_liquidity accepts &mut as superset of &Character
-    const charRef = shared(tx, ctx.characterId, ctx.characterIsv, true);
-
-    addAuthorizeFragment(tx, charRef, ssuRef, params.ownerCapId, getAmmOriginalPackageId());
-
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::add_liquidity`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            ssuRef,
-            charRef,
-            tx.pure.u64(params.typeId),
-            tx.pure.u32(params.amount),
-        ],
-    });
+    tx.add(
+        amm.initFeeConfig({
+            package: getAmmPackageId(),
+            arguments: {
+                pool: sharedRef(tx, pool.poolId, pool.poolIsv, true),
+                adminCap: tx.object(params.adminCapId),
+                surgeBps: params.surgeBps,
+                bonusBps: params.bonusBps,
+            },
+        }),
+    );
     return tx;
 }
 
-/** Set reserves directly (admin only) */
-export function buildSetReservesTx(pool: PoolContext, params: {
-    adminCapId: string; reserveA: bigint; reserveB: bigint;
-}): Transaction {
-    const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::set_reserves`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            tx.pure.u64(params.reserveA),
-            tx.pure.u64(params.reserveB),
-        ],
+/** Seed both tokens + init fee config — single PTB after pool creation. */
+export function buildSeedAndInitFeeTransaction(
+    pool: PoolContext,
+    ctx: SsuContext,
+    params: {
+        adminCapId: string;
+        typeIdA: bigint;
+        amountA: number;
+        typeIdB: bigint;
+        amountB: number;
+        surgeBps: bigint;
+        bonusBps: bigint;
+    },
+): Transaction {
+    return buildSeedAndInitFeeTx({
+        pool,
+        ssu: ctx,
+        adminCapId: params.adminCapId,
+        ammPackageIds: envPackageIds(),
+        seed: params,
     });
+}
+
+/** Update base trade fee (admin only). */
+export function buildUpdateFeeBpsTransaction(
+    pool: PoolContext,
+    params: { adminCapId: string; feeBps: bigint },
+): Transaction {
+    const tx = new Transaction();
+    tx.add(
+        amm.updateFeeBps({
+            package: getAmmPackageId(),
+            arguments: {
+                pool: sharedRef(tx, pool.poolId, pool.poolIsv, true),
+                adminCap: tx.object(params.adminCapId),
+                feeBps: params.feeBps,
+            },
+        }),
+    );
     return tx;
 }
 
-/** Withdraw accumulated fees */
-export function buildWithdrawFeesTx(pool: PoolContext, ctx: SsuContext, params: {
-    adminCapId: string; typeId: bigint; amount: bigint;
-}): Transaction {
+/** Update target ratio (admin only). */
+export function buildUpdateTargetRatioTransaction(
+    pool: PoolContext,
+    params: { adminCapId: string; targetA: bigint; targetB: bigint },
+): Transaction {
     const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::withdraw_fees`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            shared(tx, ctx.ssuId, ctx.ssuIsv, true),
-            shared(tx, ctx.characterId, ctx.characterIsv, false),
-            tx.pure.u64(params.typeId),
-            tx.pure.u64(params.amount),
-        ],
-    });
+    tx.add(
+        amm.updateTargetRatio({
+            package: getAmmPackageId(),
+            arguments: {
+                pool: sharedRef(tx, pool.poolId, pool.poolIsv, true),
+                adminCap: tx.object(params.adminCapId),
+                targetA: params.targetA,
+                targetB: params.targetB,
+            },
+        }),
+    );
     return tx;
 }
 
-/** Roll fees into reserves */
-export function buildRollFeesToReservesTx(pool: PoolContext, params: {
-    adminCapId: string; typeId: bigint; amount: bigint;
-}): Transaction {
+/** Update dynamic fee parameters (admin only). */
+export function buildUpdateFeeConfigTransaction(
+    pool: PoolContext,
+    params: { adminCapId: string; surgeBps: bigint; bonusBps: bigint },
+): Transaction {
     const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::roll_fees_to_reserves`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            tx.pure.u64(params.typeId),
-            tx.pure.u64(params.amount),
-        ],
-    });
+    tx.add(
+        amm.updateFeeConfig({
+            package: getAmmPackageId(),
+            arguments: {
+                pool: sharedRef(tx, pool.poolId, pool.poolIsv, true),
+                adminCap: tx.object(params.adminCapId),
+                surgeBps: params.surgeBps,
+                bonusBps: params.bonusBps,
+            },
+        }),
+    );
     return tx;
 }
 
-/** Initialize dynamic fee config (one-time, admin only) */
-export function buildInitFeeConfigTx(pool: PoolContext, params: {
-    adminCapId: string; surgeBps: bigint; bonusBps: bigint;
-}): Transaction {
-    const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::init_fee_config`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            tx.pure.u64(params.surgeBps),
-            tx.pure.u64(params.bonusBps),
-        ],
+/** Rescue items from open inventory → main (drains stranded items
+ *  from old pools). Always uses .env packages — `rescue_items` only
+ *  exists in the latest contract. */
+export function buildRescueItemsTransaction(
+    pool: PoolContext,
+    ctx: SsuContext,
+    adminCapId: string,
+    items: ReadonlyArray<{ typeId: bigint; amount: number }>,
+): Transaction {
+    return buildRescueItemsTx({
+        pool,
+        ssu: ctx,
+        adminCapId,
+        items,
+        ammPackageIds: envPackageIds(),
     });
-    return tx;
 }
 
-/** Seed both tokens into reserves + init fee config — single PTB after pool creation.
- *  Uses .env packages since this runs immediately after create_pool. */
-export function buildSeedAndInitFeeTx(pool: PoolContext, ctx: SsuContext, params: {
-    adminCapId: string;
-    typeIdA: bigint; amountA: number;
-    typeIdB: bigint; amountB: number;
-    surgeBps: bigint; bonusBps: bigint;
-}): Transaction {
-    const tx = new Transaction();
-    const pkg = AMM_ENV_CURRENT_PACKAGE_ID;
-    const poolRef = shared(tx, pool.poolId, pool.poolIsv, true);
-    const ssuRef = shared(tx, ctx.ssuId, ctx.ssuIsv, true);
-    const charRef = shared(tx, ctx.characterId, ctx.characterIsv, false);
-    const adminCap = tx.object(params.adminCapId);
-
-    // Seed token A
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::add_liquidity`,
-        arguments: [poolRef, adminCap, ssuRef, charRef, tx.pure.u64(params.typeIdA), tx.pure.u32(params.amountA)],
-    });
-    // Seed token B
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::add_liquidity`,
-        arguments: [poolRef, adminCap, ssuRef, charRef, tx.pure.u64(params.typeIdB), tx.pure.u32(params.amountB)],
-    });
-    // Reset reserves — create_pool already set them, add_liquidity double-counted
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::set_reserves`,
-        arguments: [poolRef, adminCap, tx.pure.u64(params.amountA), tx.pure.u64(params.amountB)],
-    });
-    // Init dynamic fee config
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::init_fee_config`,
-        arguments: [poolRef, adminCap, tx.pure.u64(params.surgeBps), tx.pure.u64(params.bonusBps)],
-    });
-    return tx;
-}
-
-/** Update base trade fee (admin only) */
-export function buildUpdateFeeBpsTx(pool: PoolContext, params: {
-    adminCapId: string; feeBps: bigint;
-}): Transaction {
-    const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::update_fee_bps`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            tx.pure.u64(params.feeBps),
-        ],
-    });
-    return tx;
-}
-
-/** Update target ratio (admin only) */
-export function buildUpdateTargetRatioTx(pool: PoolContext, params: {
-    adminCapId: string; targetA: bigint; targetB: bigint;
-}): Transaction {
-    const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::update_target_ratio`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            tx.pure.u64(params.targetA),
-            tx.pure.u64(params.targetB),
-        ],
-    });
-    return tx;
-}
-
-/** Update dynamic fee parameters (admin only) */
-export function buildUpdateFeeConfigTx(pool: PoolContext, params: {
-    adminCapId: string; surgeBps: bigint; bonusBps: bigint;
-}): Transaction {
-    const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::update_fee_config`,
-        arguments: [
-            shared(tx, pool.poolId, pool.poolIsv, true),
-            tx.object(params.adminCapId),
-            tx.pure.u64(params.surgeBps),
-            tx.pure.u64(params.bonusBps),
-        ],
-    });
-    return tx;
-}
-
-/** Rescue items from open inventory → main (for draining old pools).
- *  Always uses .env packages since rescue_items only exists in the latest contract. */
-export function buildRescueItemsTx(pool: PoolContext, ctx: SsuContext, adminCapId: string, items: { typeId: bigint; amount: number }[]): Transaction {
-    const tx = new Transaction();
-    const poolRef = shared(tx, pool.poolId, pool.poolIsv, false);
-    const ssuRef = shared(tx, ctx.ssuId, ctx.ssuIsv, true);
-    const charRef = shared(tx, ctx.characterId, ctx.characterIsv, false);
-    const adminCap = tx.object(adminCapId);
-
-    for (const item of items) {
-        tx.moveCall({
-            target: `${AMM_ENV_CURRENT_PACKAGE_ID}::${MODULES.AMM}::rescue_items`,
-            arguments: [poolRef, adminCap, ssuRef, charRef, tx.pure.u64(item.typeId), tx.pure.u32(item.amount)],
-        });
-    }
-    return tx;
-}
-
-/** Swap: deposit_for_swap → swap → withdraw_from_swap (all in one PTB).
+/** Swap: deposit_for_swap → swap → withdraw_from_swap (one PTB).
  *  The 3-step flow gates items per-player to prevent front-running. */
-export function buildSwapTx(pool: PoolContext, ctx: SsuContext, params: {
-    typeIdIn: bigint; amountIn: bigint; minOut: bigint;
-    typeIdOut: bigint; totalOutput: bigint;
-}): Transaction {
-    const tx = new Transaction();
-    const pkg = getAmmPackageId();
-    const poolRef = shared(tx, pool.poolId, pool.poolIsv, true);
-    const ssuRef = shared(tx, ctx.ssuId, ctx.ssuIsv, true);
-    const charRef = shared(tx, ctx.characterId, ctx.characterIsv, false);
-
-    // 1. Lock input items from SSU owner inventory into open inventory
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::deposit_for_swap`,
-        arguments: [poolRef, ssuRef, charRef, tx.pure.u64(params.typeIdIn), tx.pure.u64(params.amountIn)],
+export function buildSwapTransaction(
+    pool: PoolContext,
+    ctx: SsuContext,
+    swap: {
+        typeIdIn: bigint;
+        amountIn: bigint;
+        minOut: bigint;
+        typeIdOut: bigint;
+        totalOutput: bigint;
+    },
+): Transaction {
+    return buildSwapTx({
+        pool,
+        ssu: ctx,
+        ammPackageIds: packageIds(),
+        swap,
     });
-    // 2. Execute swap (accounting only — no item movement)
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::swap`,
-        arguments: [poolRef, tx.pure.u64(params.typeIdIn), tx.pure.u64(params.amountIn), tx.pure.u64(params.minOut)],
-    });
-    // 3. Collect output from open inventory back to SSU owner inventory
-    tx.moveCall({
-        target: `${pkg}::${MODULES.AMM}::withdraw_from_swap`,
-        arguments: [poolRef, ssuRef, charRef, tx.pure.u64(params.typeIdOut), tx.pure.u64(params.totalOutput)],
-    });
-    return tx;
 }
+
+/* Backwards-compat aliases — historical names callers may still use. */
+export {
+    buildAuthorizeTransaction as buildAuthorizeTx,
+    buildAuthorizeAndCreatePoolTransaction as buildAuthorizeAndCreatePoolTx,
+    buildCreatePoolTransaction as buildCreatePoolTx,
+    buildSeedTransaction as buildSeedTx,
+    buildSetReservesTransaction as buildSetReservesTx,
+    buildWithdrawFeesTransaction as buildWithdrawFeesTx,
+    buildRollFeesToReservesTransaction as buildRollFeesToReservesTx,
+    buildInitFeeConfigTransaction as buildInitFeeConfigTx,
+    buildSeedAndInitFeeTransaction as buildSeedAndInitFeeTx,
+    buildUpdateFeeBpsTransaction as buildUpdateFeeBpsTx,
+    buildUpdateTargetRatioTransaction as buildUpdateTargetRatioTx,
+    buildUpdateFeeConfigTransaction as buildUpdateFeeConfigTx,
+    buildRescueItemsTransaction as buildRescueItemsTx,
+    buildSwapTransaction as buildSwapTx,
+};

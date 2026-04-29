@@ -17,9 +17,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dapps
     steps:
       - uses: actions/checkout@v4
 
@@ -27,13 +24,15 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
-          cache-dependency-path: dapps/pnpm-lock.yaml
 
+      # The repo is now a pnpm workspace; the dapp shares @mysten/sui with
+      # the root via hoisted `node_modules/`. Install at the root, then
+      # build the dapp with `--filter`.
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm build
+      - run: pnpm --filter ./dapps build
         env:
           VITE_EVE_WORLD_PACKAGE_ID: "0x28b497559d65ab320d9da4613bf2498d5946b2c0ae3597ccfda3072ce127448c"
           VITE_AMM_ORIGINAL_PACKAGE_ID: "0x84c5a10c4d570849d04f01ebcb1f8255affd0eb97209e36f1badaea989941483"

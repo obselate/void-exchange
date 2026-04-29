@@ -1,94 +1,93 @@
 /**
  * Authorize the AMMAuth extension on a Storage Unit.
  *
- * The SSU owner must run this before any pool can operate on that SSU.
- * This registers the AMMAuth witness type so the AMM can deposit/withdraw.
+ * The SSU owner must run this once before any pool can operate on that SSU.
+ * The 3-call PTB borrows the SSU OwnerCap from the Character, calls
+ * `authorize_extension<AMMAuth>`, and returns the cap — same shape as the
+ * dapp's authorize flow, sharing the builder in `lib/amm`.
  *
  * Required env:
- *   AMM_PACKAGE_ID        — published amm_extension package
- *   WORLD_PACKAGE_ID      — world package (or via extracted-object-ids)
- *   PLAYER_A_PRIVATE_KEY  — SSU owner's private key
- *   SSU_OBJECT_ID         — the StorageUnit object ID
- *   CHARACTER_OBJECT_ID   — the owner's Character object ID
+ *   AMM_PACKAGE_ID            — current AMM package address (function calls).
+ *   AMM_ORIGINAL_PACKAGE_ID   — original AMM package address (AMMAuth type).
+ *                               Optional; falls back to AMM_PACKAGE_ID if the
+ *                               package has not been upgraded.
+ *   WORLD_PACKAGE_ID          — world package address.
+ *   SUI_NETWORK               — localnet/testnet/devnet/mainnet.
+ *   SUI_RPC_URL               — optional, overrides the default fullnode.
+ *   PLAYER_A_PRIVATE_KEY      — SSU owner's private key (Sui suiprivkey…).
+ *   SSU_OBJECT_ID             — the StorageUnit object ID.
+ *   CHARACTER_OBJECT_ID       — the owner's Character object ID.
  */
 import "dotenv/config";
-import { Transaction } from "@mysten/sui/transactions";
-import { MODULES } from "../utils/config";
+
 import {
-    getEnvConfig,
-    handleError,
-    hydrateWorldConfig,
-    initializeContext,
-    requireEnv,
-} from "../utils/helper";
+    createSuiClient,
+    keypairFromEnv,
+    executeTx,
+    loadEnv,
+    optionalEnv,
+    getInitialSharedVersion,
+} from "../lib";
+import { buildAuthorizeTx, type AmmPackageIds } from "../lib/amm";
 import { getOwnerCap } from "../helpers/storage-unit-extension";
 
-/** AMM extension module names matching the Move package. */
-const AMM_MODULE = { AMM: "amm" } as const;
-
-function requireAmmPackageId(): string {
-    return requireEnv("AMM_PACKAGE_ID");
-}
-
 async function main() {
-    console.log("============= Authorize AMM Extension on SSU ==============\n");
+    const env = loadEnv([
+        "AMM_PACKAGE_ID",
+        "WORLD_PACKAGE_ID",
+        "SSU_OBJECT_ID",
+        "CHARACTER_OBJECT_ID",
+    ] as const);
+    const ammPackageIds: AmmPackageIds = {
+        current: env.AMM_PACKAGE_ID,
+        original: optionalEnv("AMM_ORIGINAL_PACKAGE_ID", env.AMM_PACKAGE_ID),
+    };
 
-    try {
-        const env = getEnvConfig();
-        const playerKey = requireEnv("PLAYER_A_PRIVATE_KEY");
-        const ctx = initializeContext(env.network, playerKey);
-        await hydrateWorldConfig(ctx);
+    const client = createSuiClient();
+    const keypair = keypairFromEnv("PLAYER_A_PRIVATE_KEY");
+    const sender = keypair.getPublicKey().toSuiAddress();
 
-        const { client, keypair, config, address } = ctx;
-        const ammPackageId = requireAmmPackageId();
-        const ssuId = requireEnv("SSU_OBJECT_ID");
-        const characterId = requireEnv("CHARACTER_OBJECT_ID");
-
-        // Find the StorageUnit OwnerCap held by the character
-        const ssuOwnerCapId = await getOwnerCap(ssuId, client, config, address);
-        if (!ssuOwnerCapId) {
-            throw new Error(`StorageUnit OwnerCap not found for SSU ${ssuId}`);
-        }
-
-        const authType = `${ammPackageId}::${AMM_MODULE.AMM}::AMMAuth`;
-        const storageUnitType = `${config.packageId}::${MODULES.STORAGE_UNIT}::StorageUnit`;
-
-        const tx = new Transaction();
-
-        // Borrow the StorageUnit OwnerCap from the Character
-        const [ownerCap, returnReceipt] = tx.moveCall({
-            target: `${config.packageId}::${MODULES.CHARACTER}::borrow_owner_cap`,
-            typeArguments: [storageUnitType],
-            arguments: [tx.object(characterId), tx.object(ssuOwnerCapId)],
-        });
-
-        // Authorize AMMAuth on the StorageUnit
-        tx.moveCall({
-            target: `${config.packageId}::${MODULES.STORAGE_UNIT}::authorize_extension`,
-            typeArguments: [authType],
-            arguments: [tx.object(ssuId), ownerCap],
-        });
-
-        // Return the OwnerCap
-        tx.moveCall({
-            target: `${config.packageId}::${MODULES.CHARACTER}::return_owner_cap`,
-            typeArguments: [storageUnitType],
-            arguments: [tx.object(characterId), ownerCap, returnReceipt],
-        });
-
-        const result = await client.signAndExecuteTransaction({
-            transaction: tx,
-            signer: keypair,
-            options: { showEffects: true, showEvents: true },
-        });
-
-        console.log("AMMAuth extension authorized on SSU!");
-        console.log("  SSU:", ssuId);
-        console.log("  Auth type:", authType);
-        console.log("  Digest:", result.digest);
-    } catch (error) {
-        handleError(error);
+    // Find the SSU's OwnerCap ticket — the world's `Character::borrow_owner_cap`
+    // consumes this object to mint a borrowed cap inside the PTB.
+    const ownerCapTicketId = await getOwnerCap(
+        env.SSU_OBJECT_ID,
+        client,
+        // Legacy helper still expects the WorldConfig-shaped argument.
+        { packageId: env.WORLD_PACKAGE_ID } as Parameters<typeof getOwnerCap>[2],
+        sender
+    );
+    if (!ownerCapTicketId) {
+        throw new Error(`SSU ${env.SSU_OBJECT_ID} has no OwnerCap ticket — is the SSU online?`);
     }
+
+    // Resolve initial shared versions so the PTB can be built without an
+    // additional RPC round-trip at execution time.
+    const [ssuIsv, characterIsv] = await Promise.all([
+        getInitialSharedVersion(client, env.SSU_OBJECT_ID),
+        getInitialSharedVersion(client, env.CHARACTER_OBJECT_ID),
+    ]);
+
+    const tx = buildAuthorizeTx({
+        ssu: {
+            ssuId: env.SSU_OBJECT_ID,
+            ssuIsv,
+            characterId: env.CHARACTER_OBJECT_ID,
+            characterIsv,
+        },
+        ownerCapTicketId,
+        worldPackageId: env.WORLD_PACKAGE_ID,
+        ammPackageIds,
+    });
+
+    const result = await executeTx(client, keypair, tx);
+
+    console.log("AMMAuth authorized on SSU.");
+    console.log(`  ssu:       ${env.SSU_OBJECT_ID}`);
+    console.log(`  authType:  ${ammPackageIds.original}::amm::AMMAuth`);
+    console.log(`  digest:    ${result.digest}`);
 }
 
-main();
+main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+});
