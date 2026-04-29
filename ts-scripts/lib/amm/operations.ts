@@ -57,6 +57,14 @@ export interface PoolContext {
     poolIsv: number;
 }
 
+/** Shared-object ref for the global `AMMRegistry`. Created once at package
+ *  publish via `init`; the same registry handles every pool deployed against
+ *  the package. */
+export interface RegistryContext {
+    registryId: string;
+    registryIsv: number;
+}
+
 // === Helpers ===
 
 /**
@@ -158,9 +166,14 @@ export function buildAuthorizeTx(args: {
 /**
  * Authorize + create_pool in a single PTB. The pool's `AMMAdminCap` is
  * transferred to `sender` so the operator picks it up immediately.
+ *
+ * Aborts with `EPoolAlreadyRegistered` (Move abort code 14) if an active
+ * pool already exists for `(make_pair(typeIdA, typeIdB), ssuId)` — see
+ * `delistPool` for redeployment.
  */
 export function buildAuthorizeAndCreatePoolTx(args: {
     ssu: SsuContext;
+    registry: RegistryContext;
     ownerCapTicketId: string;
     worldPackageId: string;
     ammPackageIds: AmmPackageIds;
@@ -178,6 +191,7 @@ export function buildAuthorizeAndCreatePoolTx(args: {
     const tx = new Transaction();
     const ssuRef = sharedRef(tx, args.ssu.ssuId, args.ssu.ssuIsv, true);
     const characterRef = sharedRef(tx, args.ssu.characterId, args.ssu.characterIsv, true);
+    const registryRef = sharedRef(tx, args.registry.registryId, args.registry.registryIsv, true);
 
     appendAuthorizeFragment(tx, {
         characterRef,
@@ -191,6 +205,7 @@ export function buildAuthorizeAndCreatePoolTx(args: {
         amm.createPool({
             package: args.ammPackageIds.current,
             arguments: {
+                registry: registryRef,
                 storageUnit: ssuRef,
                 typeIdA: args.pool.typeIdA,
                 typeIdB: args.pool.typeIdB,
@@ -211,6 +226,7 @@ export function buildAuthorizeAndCreatePoolTx(args: {
  */
 export function buildCreatePoolTx(args: {
     ssu: SsuContext;
+    registry: RegistryContext;
     ammPackageIds: AmmPackageIds;
     pool: {
         typeIdA: bigint;
@@ -228,6 +244,7 @@ export function buildCreatePoolTx(args: {
         amm.createPool({
             package: args.ammPackageIds.current,
             arguments: {
+                registry: sharedRef(tx, args.registry.registryId, args.registry.registryIsv, true),
                 storageUnit: sharedRef(tx, args.ssu.ssuId, args.ssu.ssuIsv, false),
                 typeIdA: args.pool.typeIdA,
                 typeIdB: args.pool.typeIdB,
@@ -241,6 +258,75 @@ export function buildCreatePoolTx(args: {
     );
     tx.transferObjects([adminCap], tx.pure.address(args.sender));
     return tx;
+}
+
+// === Pool lifecycle ===
+
+/** Build a single-call PTB for one of the four lifecycle ops. The Move
+ *  function signatures are identical (`pool, registry, admin_cap`). */
+function buildLifecycleTx(
+    move: typeof amm.pausePool,
+    args: {
+        pool: PoolContext;
+        registry: RegistryContext;
+        adminCapId: string;
+        ammPackageIds: AmmPackageIds;
+    }
+): Transaction {
+    const tx = new Transaction();
+    tx.add(
+        move({
+            package: args.ammPackageIds.current,
+            arguments: {
+                pool: sharedRef(tx, args.pool.poolId, args.pool.poolIsv, true),
+                registry: sharedRef(tx, args.registry.registryId, args.registry.registryIsv, true),
+                adminCap: tx.object(args.adminCapId),
+            },
+        })
+    );
+    return tx;
+}
+
+/** Pause swap and deposit_for_swap. Withdrawals and admin ops still work. */
+export function buildPausePoolTx(args: {
+    pool: PoolContext;
+    registry: RegistryContext;
+    adminCapId: string;
+    ammPackageIds: AmmPackageIds;
+}): Transaction {
+    return buildLifecycleTx(amm.pausePool, args);
+}
+
+/** Resume swap and deposit_for_swap. */
+export function buildUnpausePoolTx(args: {
+    pool: PoolContext;
+    registry: RegistryContext;
+    adminCapId: string;
+    ammPackageIds: AmmPackageIds;
+}): Transaction {
+    return buildLifecycleTx(amm.unpausePool, args);
+}
+
+/** Delist the pool from active discovery. Frees the (pair, ssu) slot
+ *  for redeployment; pool object remains for stuck-deposit drains. */
+export function buildDelistPoolTx(args: {
+    pool: PoolContext;
+    registry: RegistryContext;
+    adminCapId: string;
+    ammPackageIds: AmmPackageIds;
+}): Transaction {
+    return buildLifecycleTx(amm.delistPool, args);
+}
+
+/** Re-add a delisted pool to active discovery. Aborts with
+ *  `EPoolAlreadyRegistered` if a different pool now occupies the slot. */
+export function buildRelistPoolTx(args: {
+    pool: PoolContext;
+    registry: RegistryContext;
+    adminCapId: string;
+    ammPackageIds: AmmPackageIds;
+}): Transaction {
+    return buildLifecycleTx(amm.relistPool, args);
 }
 
 /**

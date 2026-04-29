@@ -2,7 +2,7 @@
 #[test_only]
 module amm_extension::amm_tests;
 
-use amm_extension::amm::{Self, AMMPool, AMMAdminCap, AMMAuth};
+use amm_extension::amm::{Self, AMMPool, AMMAdminCap, AMMAuth, AMMRegistry};
 use std::string::utf8;
 use sui::{clock, test_scenario as ts};
 use world::{
@@ -294,6 +294,8 @@ fun storage_owner_cap_id(ts: &mut ts::Scenario, storage_id: ID): ID {
 }
 
 /// Shared setup: creates SSU with liquidity, authorizes AMMAuth, returns IDs.
+/// Also bootstraps the `AMMRegistry` shared object so tests can call
+/// `create_pool` (which now requires registry registration).
 fun setup_pool_env(
     ts: &mut ts::Scenario,
     liq_a: u32,
@@ -302,6 +304,10 @@ fun setup_pool_env(
     trader_b: u32,
 ): (ID, ID, ID, ID, ID) {
     setup_nwn(ts);
+
+    // Bootstrap the registry as the governor (publish-equivalent in tests).
+    ts::next_tx(ts, governor());
+    amm::init_for_testing(ts.ctx());
 
     let owner_char_id = create_character(ts, user_b(), CHARACTER_B_ITEM_ID);
     let trader_char_id = create_character(ts, user_a(), CHARACTER_A_ITEM_ID);
@@ -399,7 +405,9 @@ fun create_test_pool(
     // Create the pool object
     ts::next_tx(ts, user_b());
     let storage_unit = ts::take_shared_by_id<StorageUnit>(ts, storage_id);
+    let mut registry = ts::take_shared<AMMRegistry>(ts);
     let admin_cap = amm::create_pool(
+        &mut registry,
         &storage_unit,
         TOKEN_A_TYPE_ID,
         TOKEN_B_TYPE_ID,
@@ -412,6 +420,7 @@ fun create_test_pool(
     );
     let admin_cap_id = object::id(&admin_cap);
     transfer::public_transfer(admin_cap, user_b());
+    ts::return_shared(registry);
     ts::return_shared(storage_unit);
 
     // Seed the open inventory with liquidity tokens using the owner's character.
@@ -834,10 +843,12 @@ fun test_update_banner() {
     ts::next_tx(&mut ts, user_b());
     {
         let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
         let admin_cap = ts::take_from_sender<AMMAdminCap>(&ts);
-        amm::update_banner(&mut pool, &admin_cap, utf8(b"New banner"));
+        amm::update_banner(&mut pool, &mut registry, &admin_cap, utf8(b"New banner"));
         assert!(amm::banner(&pool) == utf8(b"New banner"), 0);
         ts::return_to_sender(&ts, admin_cap);
+        ts::return_shared(registry);
         ts::return_shared(pool);
     };
 
@@ -857,14 +868,17 @@ fun test_set_reserves_not_owner() {
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
-    // Create a second pool to get a different admin cap
+    // Create a second pool with a *different* pair to avoid the
+    // uniqueness check, just to obtain a non-matching admin cap.
     ts::next_tx(&mut ts, user_b());
     {
         let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
         let wrong_cap = amm::create_pool(
+            &mut registry,
             &storage_unit,
             TOKEN_A_TYPE_ID,
-            TOKEN_B_TYPE_ID,
+            999_999, // distinct second token id → different PairKey
             50,
             50,
             10,
@@ -879,6 +893,7 @@ fun test_set_reserves_not_owner() {
 
         transfer::public_transfer(wrong_cap, user_b());
         ts::return_shared(pool);
+        ts::return_shared(registry);
         ts::return_shared(storage_unit);
     };
 
@@ -1019,7 +1034,9 @@ fun test_create_pool_zero_amp() {
     ts::next_tx(&mut ts, user_b());
     {
         let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
         let admin_cap = amm::create_pool(
+            &mut registry,
             &storage_unit,
             TOKEN_A_TYPE_ID,
             TOKEN_B_TYPE_ID,
@@ -1031,6 +1048,7 @@ fun test_create_pool_zero_amp() {
             ts.ctx(),
         );
         transfer::public_transfer(admin_cap, user_b());
+        ts::return_shared(registry);
         ts::return_shared(storage_unit);
     };
 
@@ -1047,7 +1065,9 @@ fun test_create_pool_fee_too_high() {
     ts::next_tx(&mut ts, user_b());
     {
         let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
         let admin_cap = amm::create_pool(
+            &mut registry,
             &storage_unit,
             TOKEN_A_TYPE_ID,
             TOKEN_B_TYPE_ID,
@@ -1059,6 +1079,7 @@ fun test_create_pool_fee_too_high() {
             ts.ctx(),
         );
         transfer::public_transfer(admin_cap, user_b());
+        ts::return_shared(registry);
         ts::return_shared(storage_unit);
     };
 
@@ -1309,6 +1330,412 @@ fun test_quote_imbalanced_pool() {
         // amount_out is positive and bounded below reserve_out.
         let out = amm::quote_amount_out(&q);
         assert!(out > 0 && out < 1000, out);
+        ts::return_shared(pool);
+    };
+
+    ts::end(ts);
+}
+
+// ============================================================
+// Phase 4 — registry, pause, delist
+// ============================================================
+
+#[test]
+/// Registry indexes by_pair / by_ssu / meta are populated on create_pool.
+fun test_registry_populated_on_create() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    ts::next_tx(&mut ts, admin());
+    {
+        let registry = ts::take_shared<AMMRegistry>(&ts);
+        let pool = ts::take_shared<AMMPool>(&ts);
+        let pool_id = object::id(&pool);
+
+        let pair = amm::make_pair(TOKEN_A_TYPE_ID, TOKEN_B_TYPE_ID);
+        let by_pair = amm::pools_by_pair(&registry, pair);
+        assert!(vector::length(&by_pair) == 1, vector::length(&by_pair));
+        assert!(*vector::borrow(&by_pair, 0) == pool_id, 0);
+
+        let ssu_addr = object::id_to_address(&storage_id);
+        let by_ssu = amm::pools_by_ssu(&registry, ssu_addr);
+        assert!(vector::length(&by_ssu) == 1, vector::length(&by_ssu));
+
+        let meta = amm::pool_meta(&registry, pool_id);
+        assert!(amm::meta_pool_id(&meta) == pool_id, 0);
+        assert!(amm::meta_amp(&meta) == 50, 1);
+        assert!(!amm::meta_paused(&meta), 2);
+        assert!(!amm::meta_delisted(&meta), 3);
+
+        let active = amm::active_pool_for(&registry, pair, ssu_addr);
+        assert!(std::option::is_some(&active), 4);
+
+        ts::return_shared(pool);
+        ts::return_shared(registry);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+#[expected_failure(abort_code = amm::EPoolAlreadyRegistered)]
+/// Creating a second active pool with the same (pair, ssu) aborts.
+fun test_create_pool_uniqueness_abort() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    // Try to create a second pool with the same pair on the same SSU.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let cap = amm::create_pool(
+            &mut registry,
+            &storage_unit,
+            TOKEN_A_TYPE_ID,
+            TOKEN_B_TYPE_ID,
+            10,
+            10,
+            5,
+            10,
+            utf8(b"Duplicate"),
+            ts.ctx(),
+        );
+        transfer::public_transfer(cap, user_b());
+        ts::return_shared(registry);
+        ts::return_shared(storage_unit);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+/// Pair canonicalization: `(A, B)` and `(B, A)` map to the same key,
+/// so swapped-order creation also conflicts.
+#[expected_failure(abort_code = amm::EPoolAlreadyRegistered)]
+fun test_create_pool_uniqueness_swapped_order() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    ts::next_tx(&mut ts, user_b());
+    {
+        let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        // Same pair, swapped argument order — should abort.
+        let cap = amm::create_pool(
+            &mut registry,
+            &storage_unit,
+            TOKEN_B_TYPE_ID,
+            TOKEN_A_TYPE_ID,
+            10,
+            10,
+            5,
+            10,
+            utf8(b"Swapped"),
+            ts.ctx(),
+        );
+        transfer::public_transfer(cap, user_b());
+        ts::return_shared(registry);
+        ts::return_shared(storage_unit);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+#[expected_failure(abort_code = amm::EPaused)]
+/// Pause stops new swap flow.
+fun test_pause_blocks_swap() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 10, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    // Pause.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let admin_cap = ts::take_from_sender<AMMAdminCap>(&ts);
+        amm::pause_pool(&mut pool, &mut registry, &admin_cap);
+        assert!(amm::is_paused(&pool), 0);
+        ts::return_to_sender(&ts, admin_cap);
+        ts::return_shared(registry);
+        ts::return_shared(pool);
+    };
+
+    // deposit_for_swap should now abort with EPaused.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
+        amm::deposit_for_swap(
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            10,
+            ts.ctx(),
+        );
+        ts::return_shared(character);
+        ts::return_shared(storage_unit);
+        ts::return_shared(pool);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+/// Pause does NOT block withdraw_from_swap — stuck deposits drain freely.
+fun test_pause_allows_withdraw() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 10, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    // Deposit BEFORE pause so we have something to withdraw.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
+        amm::deposit_for_swap(
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            10,
+            ts.ctx(),
+        );
+        ts::return_shared(character);
+        ts::return_shared(storage_unit);
+        ts::return_shared(pool);
+    };
+
+    // Pause.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let admin_cap = ts::take_from_sender<AMMAdminCap>(&ts);
+        amm::pause_pool(&mut pool, &mut registry, &admin_cap);
+        ts::return_to_sender(&ts, admin_cap);
+        ts::return_shared(registry);
+        ts::return_shared(pool);
+    };
+
+    // Withdraw the stuck 10 — should succeed.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
+        amm::withdraw_from_swap(
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            10,
+            ts.ctx(),
+        );
+        ts::return_shared(character);
+        ts::return_shared(storage_unit);
+        ts::return_shared(pool);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+/// Unpause restores swap flow.
+fun test_unpause_restores_swap() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 10, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    // Pause then unpause.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let admin_cap = ts::take_from_sender<AMMAdminCap>(&ts);
+        amm::pause_pool(&mut pool, &mut registry, &admin_cap);
+        amm::unpause_pool(&mut pool, &mut registry, &admin_cap);
+        assert!(!amm::is_paused(&pool), 0);
+        ts::return_to_sender(&ts, admin_cap);
+        ts::return_shared(registry);
+        ts::return_shared(pool);
+    };
+
+    // Deposit must succeed after unpause.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let mut pool = ts::take_shared<AMMPool>(&ts);
+        let mut storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
+        amm::deposit_for_swap(
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            10,
+            ts.ctx(),
+        );
+        ts::return_shared(character);
+        ts::return_shared(storage_unit);
+        ts::return_shared(pool);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+/// Delist frees the (pair, ssu) slot for redeployment.
+fun test_delist_frees_slot() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    // Delist.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let pool = ts::take_shared<AMMPool>(&ts);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let admin_cap = ts::take_from_sender<AMMAdminCap>(&ts);
+        amm::delist_pool(&pool, &mut registry, &admin_cap);
+        let pool_id = object::id(&pool);
+        let meta = amm::pool_meta(&registry, pool_id);
+        assert!(amm::meta_delisted(&meta), 0);
+        // active_pool_for returns none after delist.
+        let pair = amm::make_pair(TOKEN_A_TYPE_ID, TOKEN_B_TYPE_ID);
+        let ssu_addr = object::id_to_address(&storage_id);
+        let active = amm::active_pool_for(&registry, pair, ssu_addr);
+        assert!(std::option::is_none(&active), 1);
+        ts::return_to_sender(&ts, admin_cap);
+        ts::return_shared(registry);
+        ts::return_shared(pool);
+    };
+
+    // A fresh create_pool with the same (pair, ssu) now succeeds.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let cap = amm::create_pool(
+            &mut registry,
+            &storage_unit,
+            TOKEN_A_TYPE_ID,
+            TOKEN_B_TYPE_ID,
+            50,
+            50,
+            10,
+            5,
+            utf8(b"Replacement"),
+            ts.ctx(),
+        );
+        transfer::public_transfer(cap, user_b());
+        ts::return_shared(registry);
+        ts::return_shared(storage_unit);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+#[expected_failure(abort_code = amm::EPoolAlreadyRegistered)]
+/// Relist conflicts with an active pool occupying the same (pair, ssu)
+/// slot.
+fun test_relist_conflict_aborts() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let original_cap_id = create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    // Capture the original pool's ID before delisting.
+    ts::next_tx(&mut ts, user_b());
+    let original_pool_id = {
+        let pool = ts::take_shared<AMMPool>(&ts);
+        let id = object::id(&pool);
+        ts::return_shared(pool);
+        id
+    };
+
+    // Delist the original.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let pool = ts::take_shared_by_id<AMMPool>(&ts, original_pool_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let admin_cap = ts::take_from_sender<AMMAdminCap>(&ts);
+        amm::delist_pool(&pool, &mut registry, &admin_cap);
+        ts::return_to_sender(&ts, admin_cap);
+        ts::return_shared(registry);
+        ts::return_shared(pool);
+    };
+
+    // Create replacement; the slot is free.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let cap = amm::create_pool(
+            &mut registry,
+            &storage_unit,
+            TOKEN_A_TYPE_ID,
+            TOKEN_B_TYPE_ID,
+            50,
+            50,
+            10,
+            5,
+            utf8(b"Replacement"),
+            ts.ctx(),
+        );
+        transfer::public_transfer(cap, user_b());
+        ts::return_shared(registry);
+        ts::return_shared(storage_unit);
+    };
+
+    // Try to relist the original — should abort, slot now occupied.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let pool = ts::take_shared_by_id<AMMPool>(&ts, original_pool_id);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let admin_cap = ts::take_from_address_by_id<AMMAdminCap>(&ts, user_b(), original_cap_id);
+        amm::relist_pool(&pool, &mut registry, &admin_cap);
+        ts::return_to_address(user_b(), admin_cap);
+        ts::return_shared(registry);
+        ts::return_shared(pool);
+    };
+
+    ts::end(ts);
+}
+
+#[test]
+/// Relist reopens an unconflicted slot.
+fun test_relist_reopens_slot() {
+    let mut ts = ts::begin(governor());
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
+    create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
+
+    // Delist then relist.
+    ts::next_tx(&mut ts, user_b());
+    {
+        let pool = ts::take_shared<AMMPool>(&ts);
+        let mut registry = ts::take_shared<AMMRegistry>(&ts);
+        let admin_cap = ts::take_from_sender<AMMAdminCap>(&ts);
+        amm::delist_pool(&pool, &mut registry, &admin_cap);
+        amm::relist_pool(&pool, &mut registry, &admin_cap);
+
+        let pool_id = object::id(&pool);
+        let meta = amm::pool_meta(&registry, pool_id);
+        assert!(!amm::meta_delisted(&meta), 0);
+        let pair = amm::make_pair(TOKEN_A_TYPE_ID, TOKEN_B_TYPE_ID);
+        let ssu_addr = object::id_to_address(&storage_id);
+        let active = amm::active_pool_for(&registry, pair, ssu_addr);
+        assert!(std::option::is_some(&active), 1);
+
+        ts::return_to_sender(&ts, admin_cap);
+        ts::return_shared(registry);
         ts::return_shared(pool);
     };
 

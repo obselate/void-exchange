@@ -35,8 +35,17 @@ jobs:
       - run: pnpm --filter ./dapps build
         env:
           VITE_EVE_WORLD_PACKAGE_ID: "0x28b497559d65ab320d9da4613bf2498d5946b2c0ae3597ccfda3072ce127448c"
+          # AMM package IDs and the registry's shared object ref need to be
+          # updated *together* whenever the amm_extension package is
+          # republished — module init creates a fresh AMMRegistry per
+          # publish. After `sui client publish`, run
+          # `sui client object <registry-id>` to read its
+          # initial_shared_version and update both VITE_AMM_REGISTRY_*
+          # entries below.
           VITE_AMM_ORIGINAL_PACKAGE_ID: "0x84c5a10c4d570849d04f01ebcb1f8255affd0eb97209e36f1badaea989941483"
           VITE_AMM_PACKAGE_ID: "0x84c5a10c4d570849d04f01ebcb1f8255affd0eb97209e36f1badaea989941483"
+          VITE_AMM_REGISTRY_ID: ""
+          VITE_AMM_REGISTRY_INITIAL_SHARED_VERSION: "0"
           VITE_SUI_GRAPHQL_ENDPOINT: "https://graphql.testnet.sui.io/graphql"
           VITE_APP_TITLE: "VOID EXCHANGE // EVE FRONTIER"
 

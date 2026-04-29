@@ -17,25 +17,40 @@ import {
     buildAuthorizeAndCreatePoolTx,
     buildAuthorizeTx,
     buildCreatePoolTx,
+    buildDelistPoolTx,
+    buildPausePoolTx,
+    buildRelistPoolTx,
     buildRescueItemsTx,
     buildSeedAndInitFeeTx,
     buildSeedTx,
     buildSwapTx,
+    buildUnpausePoolTx,
     sharedRef,
     type AmmPackageIds,
     type PoolContext,
+    type RegistryContext,
     type SsuContext,
 } from "../../../ts-scripts/lib/amm";
 import {
     AMM_ENV_CURRENT_PACKAGE_ID,
     AMM_ENV_ORIGINAL_PACKAGE_ID,
+    AMM_REGISTRY_ID,
+    AMM_REGISTRY_INITIAL_SHARED_VERSION,
     WORLD_PACKAGE_ID,
     getAmmOriginalPackageId,
     getAmmPackageId,
 } from "../config";
 
 // Re-export for callers that imported these from this module historically.
-export type { SsuContext, PoolContext };
+export type { SsuContext, PoolContext, RegistryContext };
+
+/** The single global registry, sourced from .env. */
+function registryContext(): RegistryContext {
+    return {
+        registryId: AMM_REGISTRY_ID,
+        registryIsv: AMM_REGISTRY_INITIAL_SHARED_VERSION,
+    };
+}
 
 /** Package IDs reflecting whatever the user has selected (pool-derived
  *  override over .env). */
@@ -78,6 +93,7 @@ export function buildAuthorizeAndCreatePoolTransaction(
 ): Transaction {
     return buildAuthorizeAndCreatePoolTx({
         ssu: ctx,
+        registry: registryContext(),
         ownerCapTicketId: ownerCapId,
         worldPackageId: WORLD_PACKAGE_ID,
         ammPackageIds: envPackageIds(),
@@ -102,9 +118,63 @@ export function buildCreatePoolTransaction(
 ): Transaction {
     return buildCreatePoolTx({
         ssu: ctx,
+        registry: registryContext(),
         ammPackageIds: envPackageIds(),
         pool,
         sender: pool.sender,
+    });
+}
+
+/** Pause swap and deposit_for_swap (admin only). */
+export function buildPausePoolTransaction(
+    pool: PoolContext,
+    adminCapId: string,
+): Transaction {
+    return buildPausePoolTx({
+        pool,
+        registry: registryContext(),
+        adminCapId,
+        ammPackageIds: packageIds(),
+    });
+}
+
+/** Resume swap and deposit_for_swap (admin only). */
+export function buildUnpausePoolTransaction(
+    pool: PoolContext,
+    adminCapId: string,
+): Transaction {
+    return buildUnpausePoolTx({
+        pool,
+        registry: registryContext(),
+        adminCapId,
+        ammPackageIds: packageIds(),
+    });
+}
+
+/** Delist the pool from active discovery (admin only). Frees the
+ *  (pair, ssu) slot for redeployment. */
+export function buildDelistPoolTransaction(
+    pool: PoolContext,
+    adminCapId: string,
+): Transaction {
+    return buildDelistPoolTx({
+        pool,
+        registry: registryContext(),
+        adminCapId,
+        ammPackageIds: packageIds(),
+    });
+}
+
+/** Re-add a delisted pool to active discovery (admin only). */
+export function buildRelistPoolTransaction(
+    pool: PoolContext,
+    adminCapId: string,
+): Transaction {
+    return buildRelistPoolTx({
+        pool,
+        registry: registryContext(),
+        adminCapId,
+        ammPackageIds: packageIds(),
     });
 }
 

@@ -24,6 +24,7 @@
 import { MoveStruct, normalizeMoveArguments, type RawTransactionArgument } from '../utils/index.js';
 import { bcs } from '@mysten/sui/bcs';
 import { type Transaction, type TransactionArgument } from '@mysten/sui/transactions';
+import * as table from './deps/sui/table.js';
 const $moduleName = '@local-pkg/amm-extension::amm';
 export const AMMAuth = new MoveStruct({ name: `${$moduleName}::AMMAuth`, fields: {
         dummy_field: bcs.bool()
@@ -55,7 +56,12 @@ export const Config = new MoveStruct({ name: `${$moduleName}::Config`, fields: {
         amp: bcs.u64(),
         fee_bps: bcs.u64(),
         banner: bcs.string(),
-        owner: bcs.Address
+        owner: bcs.Address,
+        /**
+         * Pause halts new flow (`swap`, `deposit_for_swap`); admin operations and
+         * stuck-deposit drains (`withdraw_from_swap`) are unaffected.
+         */
+        paused: bcs.bool()
     } });
 export const FeeConfig = new MoveStruct({ name: `${$moduleName}::FeeConfig`, fields: {
         surge_bps: bcs.u64(),
@@ -84,6 +90,93 @@ export const SwapQuote = new MoveStruct({ name: `${$moduleName}::SwapQuote`, fie
         bonus_amount: bcs.u64(),
         price_impact_bps: bcs.u64()
     } });
+export const PairKey = new MoveStruct({ name: `${$moduleName}::PairKey`, fields: {
+        lo: bcs.u64(),
+        hi: bcs.u64()
+    } });
+export const ActiveKey = new MoveStruct({ name: `${$moduleName}::ActiveKey`, fields: {
+        pair: PairKey,
+        ssu: bcs.Address
+    } });
+export const PoolMeta = new MoveStruct({ name: `${$moduleName}::PoolMeta`, fields: {
+        pool_id: bcs.Address,
+        ssu_id: bcs.Address,
+        pair: PairKey,
+        amp: bcs.u64(),
+        banner: bcs.string(),
+        paused: bcs.bool(),
+        delisted: bcs.bool(),
+        /**
+         * `tx_context::epoch_timestamp_ms` at registration. Stable across upgrades; used
+         * by clients for sort/filter.
+         */
+        created_at_ms: bcs.u64()
+    } });
+export const AMMRegistry = new MoveStruct({ name: `${$moduleName}::AMMRegistry`, fields: {
+        id: bcs.Address,
+        /**
+         * All pools that trade a given pair. `vector<ID>` so a single (pair) read returns
+         * every venue across SSUs.
+         */
+        by_pair: table.Table,
+        /** All pools hosted at a given SSU. */
+        by_ssu: table.Table,
+        /** Source-of-truth row per pool. */
+        meta: table.Table,
+        /** Uniqueness index for active (non-delisted) pools. */
+        active_at: table.Table
+    } });
+export const PoolRegistered = new MoveStruct({ name: `${$moduleName}::PoolRegistered`, fields: {
+        pool_id: bcs.Address,
+        ssu_id: bcs.Address,
+        pair: PairKey,
+        amp: bcs.u64()
+    } });
+export const PoolDelisted = new MoveStruct({ name: `${$moduleName}::PoolDelisted`, fields: {
+        pool_id: bcs.Address,
+        pair: PairKey,
+        ssu_id: bcs.Address
+    } });
+export const PoolRelisted = new MoveStruct({ name: `${$moduleName}::PoolRelisted`, fields: {
+        pool_id: bcs.Address,
+        pair: PairKey,
+        ssu_id: bcs.Address
+    } });
+export const PoolPaused = new MoveStruct({ name: `${$moduleName}::PoolPaused`, fields: {
+        pool_id: bcs.Address
+    } });
+export const PoolUnpaused = new MoveStruct({ name: `${$moduleName}::PoolUnpaused`, fields: {
+        pool_id: bcs.Address
+    } });
+export interface MakePairArguments {
+    a: RawTransactionArgument<number | bigint>;
+    b: RawTransactionArgument<number | bigint>;
+}
+export interface MakePairOptions {
+    package?: string;
+    arguments: MakePairArguments | [
+        a: RawTransactionArgument<number | bigint>,
+        b: RawTransactionArgument<number | bigint>
+    ];
+}
+/**
+ * Construct a canonical `PairKey`. Sorts `(a, b)` so the resulting key is
+ * direction-independent.
+ */
+export function makePair(options: MakePairOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        'u64',
+        'u64'
+    ] satisfies (string | null)[];
+    const parameterNames = ["a", "b"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'make_pair',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
 export interface DepositForSwapArguments {
     pool: RawTransactionArgument<string>;
     storageUnit: RawTransactionArgument<string>;
@@ -189,6 +282,7 @@ export function playerDeposit(options: PlayerDepositOptions) {
     });
 }
 export interface CreatePoolArguments {
+    registry: RawTransactionArgument<string>;
     storageUnit: RawTransactionArgument<string>;
     typeIdA: RawTransactionArgument<number | bigint>;
     typeIdB: RawTransactionArgument<number | bigint>;
@@ -201,6 +295,7 @@ export interface CreatePoolArguments {
 export interface CreatePoolOptions {
     package?: string;
     arguments: CreatePoolArguments | [
+        registry: RawTransactionArgument<string>,
         storageUnit: RawTransactionArgument<string>,
         typeIdA: RawTransactionArgument<number | bigint>,
         typeIdB: RawTransactionArgument<number | bigint>,
@@ -211,10 +306,16 @@ export interface CreatePoolOptions {
         banner: RawTransactionArgument<string>
     ];
 }
-/** Create pool. Liquidity must already be in the SSU open inventory. */
+/**
+ * Create pool and register it. Liquidity must already be in the SSU open
+ * inventory. Aborts with `EPoolAlreadyRegistered` if an active pool already exists
+ * for `(make_pair(type_id_a, type_id_b), ssu)` — delisting the existing pool first
+ * frees the slot for redeployment (see `delist_pool`).
+ */
 export function createPool(options: CreatePoolOptions) {
     const packageAddress = options.package ?? '@local-pkg/amm-extension';
     const argumentsTypes = [
+        null,
         null,
         'u64',
         'u64',
@@ -224,11 +325,460 @@ export function createPool(options: CreatePoolOptions) {
         'u64',
         '0x1::string::String'
     ] satisfies (string | null)[];
-    const parameterNames = ["storageUnit", "typeIdA", "typeIdB", "reserveA", "reserveB", "amp", "feeBps", "banner"];
+    const parameterNames = ["registry", "storageUnit", "typeIdA", "typeIdB", "reserveA", "reserveB", "amp", "feeBps", "banner"];
     return (tx: Transaction) => tx.moveCall({
         package: packageAddress,
         module: 'amm',
         function: 'create_pool',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface PausePoolArguments {
+    pool: RawTransactionArgument<string>;
+    registry: RawTransactionArgument<string>;
+    adminCap: RawTransactionArgument<string>;
+}
+export interface PausePoolOptions {
+    package?: string;
+    arguments: PausePoolArguments | [
+        pool: RawTransactionArgument<string>,
+        registry: RawTransactionArgument<string>,
+        adminCap: RawTransactionArgument<string>
+    ];
+}
+/**
+ * Pause `swap` and `deposit_for_swap` for this pool. Admin operations,
+ * `withdraw_from_swap`, and stuck-deposit drains continue to work.
+ */
+export function pausePool(options: PausePoolOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        null,
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["pool", "registry", "adminCap"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'pause_pool',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface UnpausePoolArguments {
+    pool: RawTransactionArgument<string>;
+    registry: RawTransactionArgument<string>;
+    adminCap: RawTransactionArgument<string>;
+}
+export interface UnpausePoolOptions {
+    package?: string;
+    arguments: UnpausePoolArguments | [
+        pool: RawTransactionArgument<string>,
+        registry: RawTransactionArgument<string>,
+        adminCap: RawTransactionArgument<string>
+    ];
+}
+/** Resume `swap` and `deposit_for_swap`. */
+export function unpausePool(options: UnpausePoolOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        null,
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["pool", "registry", "adminCap"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'unpause_pool',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface DelistPoolArguments {
+    pool: RawTransactionArgument<string>;
+    registry: RawTransactionArgument<string>;
+    adminCap: RawTransactionArgument<string>;
+}
+export interface DelistPoolOptions {
+    package?: string;
+    arguments: DelistPoolArguments | [
+        pool: RawTransactionArgument<string>,
+        registry: RawTransactionArgument<string>,
+        adminCap: RawTransactionArgument<string>
+    ];
+}
+/**
+ * Delist the pool from the active-uniqueness index. The pool object, `by_pair`,
+ * and `by_ssu` entries remain so traders with stuck deposits can still locate and
+ * drain them. Frees the `(pair, ssu)` slot for a fresh deployment.
+ */
+export function delistPool(options: DelistPoolOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        null,
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["pool", "registry", "adminCap"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'delist_pool',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface RelistPoolArguments {
+    pool: RawTransactionArgument<string>;
+    registry: RawTransactionArgument<string>;
+    adminCap: RawTransactionArgument<string>;
+}
+export interface RelistPoolOptions {
+    package?: string;
+    arguments: RelistPoolArguments | [
+        pool: RawTransactionArgument<string>,
+        registry: RawTransactionArgument<string>,
+        adminCap: RawTransactionArgument<string>
+    ];
+}
+/**
+ * Re-add a delisted pool to the active-uniqueness index. Aborts if a different
+ * pool now occupies the `(pair, ssu)` slot.
+ */
+export function relistPool(options: RelistPoolOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        null,
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["pool", "registry", "adminCap"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'relist_pool',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface PoolsByPairArguments {
+    registry: RawTransactionArgument<string>;
+    pair: TransactionArgument;
+}
+export interface PoolsByPairOptions {
+    package?: string;
+    arguments: PoolsByPairArguments | [
+        registry: RawTransactionArgument<string>,
+        pair: TransactionArgument
+    ];
+}
+export function poolsByPair(options: PoolsByPairOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["registry", "pair"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'pools_by_pair',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface PoolsBySsuArguments {
+    registry: RawTransactionArgument<string>;
+    ssuId: RawTransactionArgument<string>;
+}
+export interface PoolsBySsuOptions {
+    package?: string;
+    arguments: PoolsBySsuArguments | [
+        registry: RawTransactionArgument<string>,
+        ssuId: RawTransactionArgument<string>
+    ];
+}
+export function poolsBySsu(options: PoolsBySsuOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        'address'
+    ] satisfies (string | null)[];
+    const parameterNames = ["registry", "ssuId"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'pools_by_ssu',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface PoolMetaArguments {
+    registry: RawTransactionArgument<string>;
+    poolId: RawTransactionArgument<string>;
+}
+export interface PoolMetaOptions {
+    package?: string;
+    arguments: PoolMetaArguments | [
+        registry: RawTransactionArgument<string>,
+        poolId: RawTransactionArgument<string>
+    ];
+}
+export function poolMeta(options: PoolMetaOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        '0x2::object::ID'
+    ] satisfies (string | null)[];
+    const parameterNames = ["registry", "poolId"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'pool_meta',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface ActivePoolForArguments {
+    registry: RawTransactionArgument<string>;
+    pair: TransactionArgument;
+    ssuId: RawTransactionArgument<string>;
+}
+export interface ActivePoolForOptions {
+    package?: string;
+    arguments: ActivePoolForArguments | [
+        registry: RawTransactionArgument<string>,
+        pair: TransactionArgument,
+        ssuId: RawTransactionArgument<string>
+    ];
+}
+export function activePoolFor(options: ActivePoolForOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        null,
+        'address'
+    ] satisfies (string | null)[];
+    const parameterNames = ["registry", "pair", "ssuId"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'active_pool_for',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface PairLoArguments {
+    p: TransactionArgument;
+}
+export interface PairLoOptions {
+    package?: string;
+    arguments: PairLoArguments | [
+        p: TransactionArgument
+    ];
+}
+export function pairLo(options: PairLoOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["p"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'pair_lo',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface PairHiArguments {
+    p: TransactionArgument;
+}
+export interface PairHiOptions {
+    package?: string;
+    arguments: PairHiArguments | [
+        p: TransactionArgument
+    ];
+}
+export function pairHi(options: PairHiOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["p"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'pair_hi',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaPoolIdArguments {
+    m: TransactionArgument;
+}
+export interface MetaPoolIdOptions {
+    package?: string;
+    arguments: MetaPoolIdArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaPoolId(options: MetaPoolIdOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_pool_id',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaSsuIdArguments {
+    m: TransactionArgument;
+}
+export interface MetaSsuIdOptions {
+    package?: string;
+    arguments: MetaSsuIdArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaSsuId(options: MetaSsuIdOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_ssu_id',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaPairArguments {
+    m: TransactionArgument;
+}
+export interface MetaPairOptions {
+    package?: string;
+    arguments: MetaPairArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaPair(options: MetaPairOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_pair',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaAmpArguments {
+    m: TransactionArgument;
+}
+export interface MetaAmpOptions {
+    package?: string;
+    arguments: MetaAmpArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaAmp(options: MetaAmpOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_amp',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaBannerArguments {
+    m: TransactionArgument;
+}
+export interface MetaBannerOptions {
+    package?: string;
+    arguments: MetaBannerArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaBanner(options: MetaBannerOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_banner',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaPausedArguments {
+    m: TransactionArgument;
+}
+export interface MetaPausedOptions {
+    package?: string;
+    arguments: MetaPausedArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaPaused(options: MetaPausedOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_paused',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaDelistedArguments {
+    m: TransactionArgument;
+}
+export interface MetaDelistedOptions {
+    package?: string;
+    arguments: MetaDelistedArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaDelisted(options: MetaDelistedOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_delisted',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface MetaCreatedAtMsArguments {
+    m: TransactionArgument;
+}
+export interface MetaCreatedAtMsOptions {
+    package?: string;
+    arguments: MetaCreatedAtMsArguments | [
+        m: TransactionArgument
+    ];
+}
+export function metaCreatedAtMs(options: MetaCreatedAtMsOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["m"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'meta_created_at_ms',
         arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
     });
 }
@@ -730,6 +1280,7 @@ export function rollFeesToReserves(options: RollFeesToReservesOptions) {
 }
 export interface UpdateBannerArguments {
     pool: RawTransactionArgument<string>;
+    registry: RawTransactionArgument<string>;
     adminCap: RawTransactionArgument<string>;
     newBanner: RawTransactionArgument<string>;
 }
@@ -737,19 +1288,24 @@ export interface UpdateBannerOptions {
     package?: string;
     arguments: UpdateBannerArguments | [
         pool: RawTransactionArgument<string>,
+        registry: RawTransactionArgument<string>,
         adminCap: RawTransactionArgument<string>,
         newBanner: RawTransactionArgument<string>
     ];
 }
-/** Update banner. */
+/**
+ * Update banner. Mirrors the change into the registry's `PoolMeta` so the dapp's
+ * global market view stays consistent.
+ */
 export function updateBanner(options: UpdateBannerOptions) {
     const packageAddress = options.package ?? '@local-pkg/amm-extension';
     const argumentsTypes = [
         null,
         null,
+        null,
         '0x1::string::String'
     ] satisfies (string | null)[];
-    const parameterNames = ["pool", "adminCap", "newBanner"];
+    const parameterNames = ["pool", "registry", "adminCap", "newBanner"];
     return (tx: Transaction) => tx.moveCall({
         package: packageAddress,
         module: 'amm',
@@ -930,6 +1486,28 @@ export function ssuId(options: SsuIdOptions) {
         package: packageAddress,
         module: 'amm',
         function: 'ssu_id',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface IsPausedArguments {
+    pool: RawTransactionArgument<string>;
+}
+export interface IsPausedOptions {
+    package?: string;
+    arguments: IsPausedArguments | [
+        pool: RawTransactionArgument<string>
+    ];
+}
+export function isPaused(options: IsPausedOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["pool"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'is_paused',
         arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
     });
 }

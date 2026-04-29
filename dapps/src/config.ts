@@ -21,6 +21,17 @@ export function getAmmPackageId(): string {
     return localStorage.getItem("amm_package_id") || AMM_CURRENT_PACKAGE_ID_ENV;
 }
 
+/** Global `AMMRegistry` shared object. Created exactly once at package
+ *  publish (module `init`), so this is package-global and pinned via env. */
+export const AMM_REGISTRY_ID = import.meta.env.VITE_AMM_REGISTRY_ID as string;
+
+/** Initial shared version of the registry. Read from chain on first
+ *  package deploy and pinned via env so the dapp can build PTBs without
+ *  an extra RPC roundtrip. */
+export const AMM_REGISTRY_INITIAL_SHARED_VERSION = Number(
+    import.meta.env.VITE_AMM_REGISTRY_INITIAL_SHARED_VERSION ?? "0",
+);
+
 export function setAmmPackageId(id: string) {
     localStorage.setItem("amm_package_id", id);
 }

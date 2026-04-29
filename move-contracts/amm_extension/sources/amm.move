@@ -16,7 +16,7 @@
 module amm_extension::amm;
 
 use std::string::String;
-use sui::dynamic_field as df;
+use sui::{dynamic_field as df, table::{Self, Table}};
 use world::{character::Character, storage_unit::StorageUnit};
 
 // === Constants ===
@@ -51,6 +51,16 @@ const EInsufficientDeposit: vector<u8> = b"Deposit balance too low";
 const ENoFeeConfig: vector<u8> = b"Fee config not initialized";
 #[error(code = 12)]
 const EInsufficientFeePool: vector<u8> = b"Fee pool below requested amount";
+#[error(code = 13)]
+const EPaused: vector<u8> = b"Pool is paused";
+#[error(code = 14)]
+const EPoolAlreadyRegistered: vector<u8> = b"An active pool already exists for this (pair, ssu)";
+#[error(code = 15)]
+const ERegistryMismatch: vector<u8> = b"Pool not in this registry";
+#[error(code = 16)]
+const EAlreadyDelisted: vector<u8> = b"Pool already delisted";
+#[error(code = 17)]
+const ENotDelisted: vector<u8> = b"Pool is not delisted";
 
 // === Structs ===
 public struct AMMAuth has drop {}
@@ -79,6 +89,9 @@ public struct Config has drop, store {
     fee_bps: u64,
     banner: String,
     owner: address,
+    /// Pause halts new flow (`swap`, `deposit_for_swap`); admin operations
+    /// and stuck-deposit drains (`withdraw_from_swap`) are unaffected.
+    paused: bool,
 }
 
 public struct FeeConfig has drop, store {
@@ -119,6 +132,99 @@ public struct SwapQuote has copy, drop {
     price_impact_bps: u64,
 }
 
+// === Registry ===
+
+/// Canonical pair key. `lo <= hi` is the invariant — `(A,B)` and `(B,A)`
+/// resolve to the same key. Use `make_pair` to construct.
+public struct PairKey has copy, drop, store {
+    lo: u64,
+    hi: u64,
+}
+
+/// Composite key for the active-pool uniqueness index: a pool exists
+/// at most once per `(pair, ssu_id)` while non-delisted.
+public struct ActiveKey has copy, drop, store {
+    pair: PairKey,
+    ssu: address,
+}
+
+/// Per-pool record stored in the registry. Mirrors fields the dapp's
+/// global market view needs without forcing it to fetch every pool's
+/// dynamic-field `Config`.
+public struct PoolMeta has copy, drop, store {
+    pool_id: ID,
+    ssu_id: address,
+    pair: PairKey,
+    amp: u64,
+    banner: String,
+    paused: bool,
+    delisted: bool,
+    /// `tx_context::epoch_timestamp_ms` at registration. Stable across
+    /// upgrades; used by clients for sort/filter.
+    created_at_ms: u64,
+}
+
+/// Single global registry. Created once via the module's `init` function
+/// when the package is published; thereafter every `create_pool` writes
+/// here. Multiple lookup indexes are kept in sync.
+public struct AMMRegistry has key {
+    id: UID,
+    /// All pools that trade a given pair. `vector<ID>` so a single
+    /// (pair) read returns every venue across SSUs.
+    by_pair: Table<PairKey, vector<ID>>,
+    /// All pools hosted at a given SSU.
+    by_ssu: Table<address, vector<ID>>,
+    /// Source-of-truth row per pool.
+    meta: Table<ID, PoolMeta>,
+    /// Uniqueness index for active (non-delisted) pools.
+    active_at: Table<ActiveKey, ID>,
+}
+
+// === Registry events ===
+
+public struct PoolRegistered has copy, drop {
+    pool_id: ID,
+    ssu_id: address,
+    pair: PairKey,
+    amp: u64,
+}
+
+public struct PoolDelisted has copy, drop {
+    pool_id: ID,
+    pair: PairKey,
+    ssu_id: address,
+}
+
+public struct PoolRelisted has copy, drop {
+    pool_id: ID,
+    pair: PairKey,
+    ssu_id: address,
+}
+
+public struct PoolPaused has copy, drop { pool_id: ID }
+public struct PoolUnpaused has copy, drop { pool_id: ID }
+
+/// Construct a canonical `PairKey`. Sorts `(a, b)` so the resulting key
+/// is direction-independent.
+public fun make_pair(a: u64, b: u64): PairKey {
+    assert!(a != b, EInvalidTypeId);
+    if (a < b) { PairKey { lo: a, hi: b } } else { PairKey { lo: b, hi: a } }
+}
+
+/// Module init — runs exactly once at package publish. Creates the
+/// global `AMMRegistry` shared object. Reference: [Sui Move module
+/// initializers](https://docs.sui.io/concepts/sui-move-concepts/init).
+fun init(ctx: &mut TxContext) {
+    let registry = AMMRegistry {
+        id: object::new(ctx),
+        by_pair: table::new(ctx),
+        by_ssu: table::new(ctx),
+        meta: table::new(ctx),
+        active_at: table::new(ctx),
+    };
+    transfer::share_object(registry);
+}
+
 // === Public ===
 
 /// Deposit items for swap: moves items from SSU owner inventory → open inventory
@@ -136,6 +242,7 @@ public fun deposit_for_swap(
     assert!(pool.ssu_id == object::id(storage_unit), ESSUMismatch);
 
     let config = df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {});
+    assert!(!config.paused, EPaused);
     let is_a = type_id == config.type_id_a;
     assert!(is_a || type_id == config.type_id_b, EInvalidTypeId);
 
@@ -223,8 +330,13 @@ public fun player_deposit(pool: &AMMPool, trader: address): (u64, u64) {
     (d.balance_a, d.balance_b)
 }
 
-/// Create pool. Liquidity must already be in the SSU open inventory.
+/// Create pool and register it. Liquidity must already be in the SSU open
+/// inventory. Aborts with `EPoolAlreadyRegistered` if an active pool already
+/// exists for `(make_pair(type_id_a, type_id_b), ssu)` — delisting the
+/// existing pool first frees the slot for redeployment (see
+/// `delist_pool`).
 public fun create_pool(
+    registry: &mut AMMRegistry,
     storage_unit: &StorageUnit,
     type_id_a: u64,
     type_id_b: u64,
@@ -239,6 +351,11 @@ public fun create_pool(
     assert!(amp >= 1, EInvalidAmp);
     assert!(fee_bps <= BPS_DENOM, EInvalidFee);
     assert!(reserve_a > 0 && reserve_b > 0, EInsufficientLiquidity);
+
+    let pair = make_pair(type_id_a, type_id_b);
+    let ssu_id_addr = object::id(storage_unit).to_address();
+    let active_key = ActiveKey { pair, ssu: ssu_id_addr };
+    assert!(!table::contains(&registry.active_at, active_key), EPoolAlreadyRegistered);
 
     let mut pool = AMMPool {
         id: object::new(ctx),
@@ -260,11 +377,162 @@ public fun create_pool(
             fee_bps,
             banner,
             owner: ctx.sender(),
+            paused: false,
         },
     );
 
+    // Read banner back out for the meta record (Config takes ownership).
+    let config_banner = df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).banner;
+    let meta = PoolMeta {
+        pool_id,
+        ssu_id: ssu_id_addr,
+        pair,
+        amp,
+        banner: config_banner,
+        paused: false,
+        delisted: false,
+        created_at_ms: tx_context::epoch_timestamp_ms(ctx),
+    };
+    table::add(&mut registry.active_at, active_key, pool_id);
+    table::add(&mut registry.meta, pool_id, meta);
+    push_to_pair_index(&mut registry.by_pair, pair, pool_id);
+    push_to_ssu_index(&mut registry.by_ssu, ssu_id_addr, pool_id);
+
+    sui::event::emit(PoolRegistered { pool_id, ssu_id: ssu_id_addr, pair, amp });
+
     transfer::share_object(pool);
     AMMAdminCap { id: object::new(ctx), pool_id }
+}
+
+// === Registry mutations ===
+
+/// Pause `swap` and `deposit_for_swap` for this pool. Admin operations,
+/// `withdraw_from_swap`, and stuck-deposit drains continue to work.
+public fun pause_pool(pool: &mut AMMPool, registry: &mut AMMRegistry, admin_cap: &AMMAdminCap) {
+    assert!(admin_cap.pool_id == object::id(pool), ENotOwner);
+    let pool_id = object::id(pool);
+    assert!(table::contains(&registry.meta, pool_id), ERegistryMismatch);
+    df::borrow_mut<ConfigKey, Config>(&mut pool.id, ConfigKey {}).paused = true;
+    let meta = table::borrow_mut(&mut registry.meta, pool_id);
+    meta.paused = true;
+    sui::event::emit(PoolPaused { pool_id });
+}
+
+/// Resume `swap` and `deposit_for_swap`.
+public fun unpause_pool(pool: &mut AMMPool, registry: &mut AMMRegistry, admin_cap: &AMMAdminCap) {
+    assert!(admin_cap.pool_id == object::id(pool), ENotOwner);
+    let pool_id = object::id(pool);
+    assert!(table::contains(&registry.meta, pool_id), ERegistryMismatch);
+    df::borrow_mut<ConfigKey, Config>(&mut pool.id, ConfigKey {}).paused = false;
+    let meta = table::borrow_mut(&mut registry.meta, pool_id);
+    meta.paused = false;
+    sui::event::emit(PoolUnpaused { pool_id });
+}
+
+/// Delist the pool from the active-uniqueness index. The pool object,
+/// `by_pair`, and `by_ssu` entries remain so traders with stuck deposits
+/// can still locate and drain them. Frees the `(pair, ssu)` slot for a
+/// fresh deployment.
+public fun delist_pool(pool: &AMMPool, registry: &mut AMMRegistry, admin_cap: &AMMAdminCap) {
+    assert!(admin_cap.pool_id == object::id(pool), ENotOwner);
+    let pool_id = object::id(pool);
+    assert!(table::contains(&registry.meta, pool_id), ERegistryMismatch);
+    let meta = table::borrow_mut(&mut registry.meta, pool_id);
+    assert!(!meta.delisted, EAlreadyDelisted);
+    let active_key = ActiveKey { pair: meta.pair, ssu: meta.ssu_id };
+    table::remove(&mut registry.active_at, active_key);
+    meta.delisted = true;
+    sui::event::emit(PoolDelisted { pool_id, pair: meta.pair, ssu_id: meta.ssu_id });
+}
+
+/// Re-add a delisted pool to the active-uniqueness index. Aborts if a
+/// different pool now occupies the `(pair, ssu)` slot.
+public fun relist_pool(pool: &AMMPool, registry: &mut AMMRegistry, admin_cap: &AMMAdminCap) {
+    assert!(admin_cap.pool_id == object::id(pool), ENotOwner);
+    let pool_id = object::id(pool);
+    assert!(table::contains(&registry.meta, pool_id), ERegistryMismatch);
+    let meta = table::borrow_mut(&mut registry.meta, pool_id);
+    assert!(meta.delisted, ENotDelisted);
+    let active_key = ActiveKey { pair: meta.pair, ssu: meta.ssu_id };
+    assert!(!table::contains(&registry.active_at, active_key), EPoolAlreadyRegistered);
+    table::add(&mut registry.active_at, active_key, pool_id);
+    meta.delisted = false;
+    sui::event::emit(PoolRelisted { pool_id, pair: meta.pair, ssu_id: meta.ssu_id });
+}
+
+// === Registry views ===
+
+public fun pools_by_pair(registry: &AMMRegistry, pair: PairKey): vector<ID> {
+    if (table::contains(&registry.by_pair, pair)) {
+        *table::borrow(&registry.by_pair, pair)
+    } else {
+        vector::empty()
+    }
+}
+
+public fun pools_by_ssu(registry: &AMMRegistry, ssu_id: address): vector<ID> {
+    if (table::contains(&registry.by_ssu, ssu_id)) {
+        *table::borrow(&registry.by_ssu, ssu_id)
+    } else {
+        vector::empty()
+    }
+}
+
+public fun pool_meta(registry: &AMMRegistry, pool_id: ID): PoolMeta {
+    *table::borrow(&registry.meta, pool_id)
+}
+
+public fun active_pool_for(
+    registry: &AMMRegistry,
+    pair: PairKey,
+    ssu_id: address,
+): std::option::Option<ID> {
+    let key = ActiveKey { pair, ssu: ssu_id };
+    if (table::contains(&registry.active_at, key)) {
+        std::option::some(*table::borrow(&registry.active_at, key))
+    } else {
+        std::option::none()
+    }
+}
+
+// === PairKey + PoolMeta accessors (for codegen consumers) ===
+
+public fun pair_lo(p: &PairKey): u64 { p.lo }
+
+public fun pair_hi(p: &PairKey): u64 { p.hi }
+
+public fun meta_pool_id(m: &PoolMeta): ID { m.pool_id }
+
+public fun meta_ssu_id(m: &PoolMeta): address { m.ssu_id }
+
+public fun meta_pair(m: &PoolMeta): PairKey { m.pair }
+
+public fun meta_amp(m: &PoolMeta): u64 { m.amp }
+
+public fun meta_banner(m: &PoolMeta): String { m.banner }
+
+public fun meta_paused(m: &PoolMeta): bool { m.paused }
+
+public fun meta_delisted(m: &PoolMeta): bool { m.delisted }
+
+public fun meta_created_at_ms(m: &PoolMeta): u64 { m.created_at_ms }
+
+// === Registry internal helpers ===
+
+fun push_to_pair_index(t: &mut Table<PairKey, vector<ID>>, key: PairKey, pool_id: ID) {
+    if (!table::contains(t, key)) {
+        table::add(t, key, vector::empty<ID>());
+    };
+    let v = table::borrow_mut(t, key);
+    vector::push_back(v, pool_id);
+}
+
+fun push_to_ssu_index(t: &mut Table<address, vector<ID>>, key: address, pool_id: ID) {
+    if (!table::contains(t, key)) {
+        table::add(t, key, vector::empty<ID>());
+    };
+    let v = table::borrow_mut(t, key);
+    vector::push_back(v, pool_id);
 }
 
 /// Initialize dynamic fee config. Call once after pool creation.
@@ -480,6 +748,8 @@ public fun swap(
     min_out: u64,
     ctx: &mut TxContext,
 ) {
+    // Pause check before any math; pause stops new flow but not stuck-deposit drains.
+    assert!(!df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).paused, EPaused);
     let (
         is_a_to_b,
         _reserve_in,
@@ -700,10 +970,19 @@ public fun roll_fees_to_reserves(
     };
 }
 
-/// Update banner.
-public fun update_banner(pool: &mut AMMPool, admin_cap: &AMMAdminCap, new_banner: String) {
+/// Update banner. Mirrors the change into the registry's `PoolMeta` so the
+/// dapp's global market view stays consistent.
+public fun update_banner(
+    pool: &mut AMMPool,
+    registry: &mut AMMRegistry,
+    admin_cap: &AMMAdminCap,
+    new_banner: String,
+) {
     assert!(admin_cap.pool_id == object::id(pool), ENotOwner);
+    let pool_id = object::id(pool);
+    assert!(table::contains(&registry.meta, pool_id), ERegistryMismatch);
     df::borrow_mut<ConfigKey, Config>(&mut pool.id, ConfigKey {}).banner = new_banner;
+    table::borrow_mut(&mut registry.meta, pool_id).banner = new_banner;
 }
 
 // === View ===
@@ -734,6 +1013,10 @@ public fun fee_bps(pool: &AMMPool): u64 {
 public fun amp(pool: &AMMPool): u64 { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).amp }
 
 public fun ssu_id(pool: &AMMPool): ID { pool.ssu_id }
+
+public fun is_paused(pool: &AMMPool): bool {
+    df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).paused
+}
 
 // === Internal: Dynamic Fee Logic ===
 
@@ -942,4 +1225,11 @@ public fun fee_pool_a(pool: &AMMPool): u64 {
 #[test_only]
 public fun fee_pool_b(pool: &AMMPool): u64 {
     df::borrow<FeeConfigKey, FeeConfig>(&pool.id, FeeConfigKey {}).fee_pool_b
+}
+
+/// Test-only registry bootstrap — `init` only runs on publish, so tests
+/// have to construct the shared object themselves.
+#[test_only]
+public fun init_for_testing(ctx: &mut TxContext) {
+    init(ctx)
 }
