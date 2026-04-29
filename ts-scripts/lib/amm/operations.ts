@@ -13,6 +13,7 @@
  *
  * Reference: https://docs.sui.io/concepts/transactions/prog-txn-blocks
  */
+import type { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction, type TransactionArgument } from "@mysten/sui/transactions";
 
 import * as amm from "./generated/amm_extension/amm";
@@ -431,6 +432,78 @@ export function buildSwapTx(args: {
         })
     );
     return tx;
+}
+
+/**
+ * Run a swap quote via `devInspectTransactionBlock` — no signature, no gas,
+ * no state mutation. Returns the same `SwapQuote` struct the on-chain
+ * `swap` would compute, decoded from BCS via the generated `MoveStruct`.
+ *
+ * Use this in place of any client-side reimplementation of the AMM math —
+ * the dapp's swap preview, fee/bonus indicators, and price-impact display
+ * should all flow through here so they stay in lockstep with the contract.
+ *
+ * Aborts on the same conditions as `swap` (`EInvalidTypeId`, `EZeroAmount`,
+ * `EInsufficientLiquidity` if `amount_in` is too large for current
+ * reserves). On abort, the underlying `devInspect` returns a non-success
+ * effects status and this function throws with the parsed Move abort.
+ *
+ * Reference:
+ * https://docs.sui.io/sui-api-ref#sui_devInspectTransactionBlock
+ */
+export async function quoteSwap(
+    client: SuiJsonRpcClient,
+    args: {
+        pool: PoolContext;
+        ammPackageIds: AmmPackageIds;
+        typeIdIn: bigint;
+        amountIn: bigint;
+        /** Sender address used for `devInspect`. Any valid address works —
+         *  no signature, no gas — so an admin/operator address is fine. */
+        sender: string;
+    }
+): Promise<{
+    amountOut: bigint;
+    feeAmount: bigint;
+    feeBps: bigint;
+    bonusAmount: bigint;
+    priceImpactBps: bigint;
+}> {
+    const tx = new Transaction();
+    tx.add(
+        amm.quote({
+            package: args.ammPackageIds.current,
+            arguments: {
+                pool: sharedRef(tx, args.pool.poolId, args.pool.poolIsv, false),
+                typeIdIn: args.typeIdIn,
+                amountIn: args.amountIn,
+            },
+        })
+    );
+
+    const result = await client.devInspectTransactionBlock({
+        sender: args.sender,
+        transactionBlock: tx,
+    });
+
+    if (result.effects.status.status !== "success") {
+        throw new Error(`quoteSwap failed: ${result.effects.status.error ?? "unknown"}`);
+    }
+
+    const returnValues = result.results?.[0]?.returnValues;
+    if (!returnValues || returnValues.length === 0) {
+        throw new Error("quoteSwap: devInspect returned no values");
+    }
+    // returnValues[0] is [bytes, type] for the first return value.
+    const [bytes] = returnValues[0];
+    const decoded = amm.SwapQuote.parse(new Uint8Array(bytes));
+    return {
+        amountOut: BigInt(decoded.amount_out),
+        feeAmount: BigInt(decoded.fee_amount),
+        feeBps: BigInt(decoded.fee_bps),
+        bonusAmount: BigInt(decoded.bonus_amount),
+        priceImpactBps: BigInt(decoded.price_impact_bps),
+    };
 }
 
 /**

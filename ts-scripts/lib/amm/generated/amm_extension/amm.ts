@@ -14,11 +14,16 @@
  * - Worsening trades pay base_fee + surge (proportional to imbalance)
  * - Rebalancing trades pay base_fee only and receive a bonus from accumulated fees
  * - Bonuses are capped at the fee_pool — house always wins
+ * 
+ * Inventory invariant (per side `s`): physical_open_s == reserve_s + fee_pool_s +
+ * Σ player_deposit_s Held across the full swap PTB (`deposit_for_swap` → `swap` →
+ * `withdraw_from_swap`). See `docs/amm-invariants.md` for the full audit and the
+ * proof trace.
  */
 
 import { MoveStruct, normalizeMoveArguments, type RawTransactionArgument } from '../utils/index.js';
 import { bcs } from '@mysten/sui/bcs';
-import { type Transaction } from '@mysten/sui/transactions';
+import { type Transaction, type TransactionArgument } from '@mysten/sui/transactions';
 const $moduleName = '@local-pkg/amm-extension::amm';
 export const AMMAuth = new MoveStruct({ name: `${$moduleName}::AMMAuth`, fields: {
         dummy_field: bcs.bool()
@@ -71,6 +76,13 @@ export const SwapWithBonusEvent = new MoveStruct({ name: `${$moduleName}::SwapWi
         amount_out: bcs.u64(),
         fee: bcs.u64(),
         bonus: bcs.u64()
+    } });
+export const SwapQuote = new MoveStruct({ name: `${$moduleName}::SwapQuote`, fields: {
+        amount_out: bcs.u64(),
+        fee_amount: bcs.u64(),
+        fee_bps: bcs.u64(),
+        bonus_amount: bcs.u64(),
+        price_impact_bps: bcs.u64()
     } });
 export interface DepositForSwapArguments {
     pool: RawTransactionArgument<string>;
@@ -342,6 +354,151 @@ export function updateTargetRatio(options: UpdateTargetRatioOptions) {
         package: packageAddress,
         module: 'amm',
         function: 'update_target_ratio',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface QuoteArguments {
+    pool: RawTransactionArgument<string>;
+    typeIdIn: RawTransactionArgument<number | bigint>;
+    amountIn: RawTransactionArgument<number | bigint>;
+}
+export interface QuoteOptions {
+    package?: string;
+    arguments: QuoteArguments | [
+        pool: RawTransactionArgument<string>,
+        typeIdIn: RawTransactionArgument<number | bigint>,
+        amountIn: RawTransactionArgument<number | bigint>
+    ];
+}
+/**
+ * Read-only swap preview. Runs the same math as `swap` without mutating the pool.
+ * Aborts on identical conditions (`EInvalidTypeId`, `EZeroAmount`,
+ * `EInsufficientLiquidity`). Designed for `devInspectTransactionBlock` so the dapp
+ * can render a quote without a wallet signature. See
+ * [Sui RPC `dev_inspect`](https://docs.sui.io/sui-api-ref#sui_devInspectTransactionBlock).
+ */
+export function quote(options: QuoteOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null,
+        'u64',
+        'u64'
+    ] satisfies (string | null)[];
+    const parameterNames = ["pool", "typeIdIn", "amountIn"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'quote',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface QuoteAmountOutArguments {
+    q: TransactionArgument;
+}
+export interface QuoteAmountOutOptions {
+    package?: string;
+    arguments: QuoteAmountOutArguments | [
+        q: TransactionArgument
+    ];
+}
+export function quoteAmountOut(options: QuoteAmountOutOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["q"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'quote_amount_out',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface QuoteFeeAmountArguments {
+    q: TransactionArgument;
+}
+export interface QuoteFeeAmountOptions {
+    package?: string;
+    arguments: QuoteFeeAmountArguments | [
+        q: TransactionArgument
+    ];
+}
+export function quoteFeeAmount(options: QuoteFeeAmountOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["q"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'quote_fee_amount',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface QuoteFeeBpsArguments {
+    q: TransactionArgument;
+}
+export interface QuoteFeeBpsOptions {
+    package?: string;
+    arguments: QuoteFeeBpsArguments | [
+        q: TransactionArgument
+    ];
+}
+export function quoteFeeBps(options: QuoteFeeBpsOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["q"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'quote_fee_bps',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface QuoteBonusAmountArguments {
+    q: TransactionArgument;
+}
+export interface QuoteBonusAmountOptions {
+    package?: string;
+    arguments: QuoteBonusAmountArguments | [
+        q: TransactionArgument
+    ];
+}
+export function quoteBonusAmount(options: QuoteBonusAmountOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["q"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'quote_bonus_amount',
+        arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
+    });
+}
+export interface QuotePriceImpactBpsArguments {
+    q: TransactionArgument;
+}
+export interface QuotePriceImpactBpsOptions {
+    package?: string;
+    arguments: QuotePriceImpactBpsArguments | [
+        q: TransactionArgument
+    ];
+}
+export function quotePriceImpactBps(options: QuotePriceImpactBpsOptions) {
+    const packageAddress = options.package ?? '@local-pkg/amm-extension';
+    const argumentsTypes = [
+        null
+    ] satisfies (string | null)[];
+    const parameterNames = ["q"];
+    return (tx: Transaction) => tx.moveCall({
+        package: packageAddress,
+        module: 'amm',
+        function: 'quote_price_impact_bps',
         arguments: normalizeMoveArguments(options.arguments, argumentsTypes, parameterNames),
     });
 }

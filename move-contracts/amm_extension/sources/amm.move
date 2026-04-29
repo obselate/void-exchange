@@ -7,6 +7,12 @@
 /// - Worsening trades pay base_fee + surge (proportional to imbalance)
 /// - Rebalancing trades pay base_fee only and receive a bonus from accumulated fees
 /// - Bonuses are capped at the fee_pool — house always wins
+///
+/// Inventory invariant (per side `s`):
+///   physical_open_s == reserve_s + fee_pool_s + Σ player_deposit_s
+/// Held across the full swap PTB
+/// (`deposit_for_swap` → `swap` → `withdraw_from_swap`). See
+/// `docs/amm-invariants.md` for the full audit and the proof trace.
 module amm_extension::amm;
 
 use std::string::String;
@@ -43,6 +49,8 @@ const EInvalidFee: vector<u8> = b"Fee exceeds 100%";
 const EInsufficientDeposit: vector<u8> = b"Deposit balance too low";
 #[error(code = 11)]
 const ENoFeeConfig: vector<u8> = b"Fee config not initialized";
+#[error(code = 12)]
+const EInsufficientFeePool: vector<u8> = b"Fee pool below requested amount";
 
 // === Structs ===
 public struct AMMAuth has drop {}
@@ -94,6 +102,21 @@ public struct SwapWithBonusEvent has copy, drop {
     amount_out: u64,
     fee: u64,
     bonus: u64,
+}
+
+/// Read-only swap preview.
+///
+/// `fee_bps` is the *effective* rate for this trade — base + surge for
+/// worsening trades, base only for rebalancing. `price_impact_bps` is the
+/// deviation between the curve's actual output and the linear rate
+/// `(net_in * target_out / target_in)`, in BPS — small for balanced
+/// trades on a high-amp pool, larger as the curve steepens.
+public struct SwapQuote has copy, drop {
+    amount_out: u64,
+    fee_amount: u64,
+    fee_bps: u64,
+    bonus_amount: u64,
+    price_impact_bps: u64,
 }
 
 // === Public ===
@@ -162,8 +185,11 @@ public fun withdraw_from_swap(
     let is_a = type_id == config.type_id_a;
     assert!(is_a || type_id == config.type_id_b, EInvalidTypeId);
 
-    // Debit player's deposit balance
+    // Debit player's deposit balance. The exists_ check is required: without
+    // it, df::borrow_mut on a missing key would abort with the framework's
+    // internal code, masking the typed error a caller depends on.
     let key = DepositKey { trader: ctx.sender() };
+    assert!(df::exists_(&pool.id, key), EInsufficientDeposit);
     let deposit = df::borrow_mut<DepositKey, PlayerDeposit>(&mut pool.id, key);
     if (is_a) {
         assert!(deposit.balance_a >= amount, EInsufficientDeposit);
@@ -299,61 +325,22 @@ public fun update_target_ratio(
     config.target_b = target_b;
 }
 
-/// Swap with dynamic fees and rebalance bonuses.
-/// Items must already be deposited via `deposit_for_swap`. Output is credited to
-/// the sender's deposit balance — call `withdraw_from_swap` to collect.
-///
-/// PTB flow: deposit_for_swap → swap → withdraw_from_swap (all in one tx).
-public fun swap(
-    pool: &mut AMMPool,
+/// Internal: resolve direction-specific config, imbalance, and worsening bit.
+fun resolve_direction(
+    pool: &AMMPool,
     type_id_in: u64,
-    amount_in: u64,
-    min_out: u64,
-    ctx: &mut TxContext,
-) {
-    assert!(amount_in > 0, EZeroAmount);
-
-    // --- Phase 1: Read config values (immutable borrow scope) ---
-    let (
-        is_a_to_b,
-        reserve_in,
-        reserve_out,
-        type_id_out,
-        base_fee_bps,
-        amp,
-        target_in,
-        target_out,
-    ) = {
-        let config = df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {});
-        assert!(type_id_in == config.type_id_a || type_id_in == config.type_id_b, EInvalidTypeId);
-        let a2b = type_id_in == config.type_id_a;
-        if (a2b) {
-            (
-                a2b,
-                config.reserve_a,
-                config.reserve_b,
-                config.type_id_b,
-                config.fee_bps,
-                config.amp,
-                config.target_a,
-                config.target_b,
-            )
-        } else {
-            (
-                a2b,
-                config.reserve_b,
-                config.reserve_a,
-                config.type_id_a,
-                config.fee_bps,
-                config.amp,
-                config.target_b,
-                config.target_a,
-            )
-        }
+): (bool, u64, u64, u64, u64, u64, u64, u64, u64, bool) {
+    let config = df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {});
+    assert!(type_id_in == config.type_id_a || type_id_in == config.type_id_b, EInvalidTypeId);
+    let is_a_to_b = type_id_in == config.type_id_a;
+    let (reserve_in, reserve_out, type_id_out, target_in, target_out) = if (is_a_to_b) {
+        (config.reserve_a, config.reserve_b, config.type_id_b, config.target_a, config.target_b)
+    } else {
+        (config.reserve_b, config.reserve_a, config.type_id_a, config.target_b, config.target_a)
     };
 
-    // Imbalance relative to target ratio using cross-product comparison
-    // At balance: reserve_in * target_out == reserve_out * target_in
+    // Imbalance relative to target ratio using cross-product comparison.
+    // At balance: reserve_in * target_out == reserve_out * target_in.
     let actual_cross = (reserve_in as u128) * (target_out as u128);
     let target_cross = (reserve_out as u128) * (target_in as u128);
     let cross_sum = actual_cross + target_cross;
@@ -363,16 +350,50 @@ public fun swap(
     let imbalance_bps = if (cross_sum > 0) {
         ((cross_diff * (BPS_DENOM as u128)) / cross_sum) as u64
     } else { 0 };
-
-    // Worsening = selling the side that's already oversupplied relative to target
+    // Worsening = selling the side already oversupplied relative to target.
     let is_worsening = actual_cross > target_cross;
 
-    // --- Phase 2: Compute fee and output (immutable borrow of pool.id) ---
+    (
+        is_a_to_b,
+        reserve_in,
+        reserve_out,
+        type_id_out,
+        config.fee_bps,
+        config.amp,
+        target_in,
+        target_out,
+        imbalance_bps,
+        is_worsening,
+    )
+}
+
+/// Internal: pure swap math. No mutation. Returns
+/// `(amount_out, fee, bonus, effective_fee_bps)`. Aborts on the same conditions
+/// as `swap` (`EInvalidTypeId`, `EZeroAmount`, `EInsufficientLiquidity`).
+fun compute_swap_math(
+    pool: &AMMPool,
+    type_id_in: u64,
+    amount_in: u64,
+): (bool, u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+    assert!(amount_in > 0, EZeroAmount);
+    let (
+        is_a_to_b,
+        reserve_in,
+        reserve_out,
+        _type_id_out,
+        base_fee_bps,
+        amp,
+        target_in,
+        target_out,
+        imbalance_bps,
+        is_worsening,
+    ) = resolve_direction(pool, type_id_in);
+
+    let effective = effective_fee_bps(base_fee_bps, imbalance_bps, is_worsening, &pool.id);
     let fee = compute_fee(amount_in, base_fee_bps, imbalance_bps, is_worsening, &pool.id);
     let net_in = amount_in - fee;
 
     let amount_out = stable_output(reserve_in, reserve_out, amp, net_in, target_in, target_out);
-    assert!(amount_out >= min_out, EInsufficientOutput);
     assert!(amount_out < reserve_out, EInsufficientLiquidity);
 
     let bonus = compute_bonus(
@@ -385,7 +406,100 @@ public fun swap(
         target_out,
         &pool.id,
     );
+    (
+        is_a_to_b,
+        reserve_in,
+        reserve_out,
+        net_in,
+        amount_out,
+        fee,
+        bonus,
+        effective,
+        target_in,
+        target_out,
+    )
+}
+
+/// Read-only swap preview. Runs the same math as `swap` without mutating the
+/// pool. Aborts on identical conditions (`EInvalidTypeId`, `EZeroAmount`,
+/// `EInsufficientLiquidity`). Designed for `devInspectTransactionBlock` so the
+/// dapp can render a quote without a wallet signature. See
+/// [Sui RPC `dev_inspect`](https://docs.sui.io/sui-api-ref#sui_devInspectTransactionBlock).
+public fun quote(pool: &AMMPool, type_id_in: u64, amount_in: u64): SwapQuote {
+    let (
+        _is_a_to_b,
+        _reserve_in,
+        _reserve_out,
+        net_in,
+        amount_out,
+        fee,
+        bonus,
+        effective,
+        target_in,
+        target_out,
+    ) = compute_swap_math(pool, type_id_in, amount_in);
+
+    // Price impact = (linear_out - amount_out) / linear_out, in BPS.
+    // Linear rate (no curve): net_in * target_out / target_in. Compared
+    // against the curve's actual amount_out, this isolates the curve's
+    // price impact from the fee component.
+    let linear_out = (net_in as u128) * (target_out as u128) / (target_in as u128);
+    let price_impact_bps = if (linear_out > (amount_out as u128)) {
+        (((linear_out - (amount_out as u128)) * (BPS_DENOM as u128)) / linear_out) as u64
+    } else { 0 };
+
+    SwapQuote {
+        amount_out,
+        fee_amount: fee,
+        fee_bps: effective,
+        bonus_amount: bonus,
+        price_impact_bps,
+    }
+}
+
+// === SwapQuote field accessors ===
+public fun quote_amount_out(q: &SwapQuote): u64 { q.amount_out }
+
+public fun quote_fee_amount(q: &SwapQuote): u64 { q.fee_amount }
+
+public fun quote_fee_bps(q: &SwapQuote): u64 { q.fee_bps }
+
+public fun quote_bonus_amount(q: &SwapQuote): u64 { q.bonus_amount }
+
+public fun quote_price_impact_bps(q: &SwapQuote): u64 { q.price_impact_bps }
+
+/// Swap with dynamic fees and rebalance bonuses.
+/// Items must already be deposited via `deposit_for_swap`. Output is credited to
+/// the sender's deposit balance — call `withdraw_from_swap` to collect.
+///
+/// PTB flow: deposit_for_swap → swap → withdraw_from_swap (all in one tx).
+public fun swap(
+    pool: &mut AMMPool,
+    type_id_in: u64,
+    amount_in: u64,
+    min_out: u64,
+    ctx: &mut TxContext,
+) {
+    let (
+        is_a_to_b,
+        _reserve_in,
+        _reserve_out,
+        net_in,
+        amount_out,
+        fee,
+        bonus,
+        _effective,
+        _target_in,
+        _target_out,
+    ) = compute_swap_math(pool, type_id_in, amount_in);
+    assert!(amount_out >= min_out, EInsufficientOutput);
     let total_output = amount_out + bonus;
+
+    // type_id_out for the event — recompute from config (cheap, immutable read).
+    let type_id_out = {
+        let config = df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {});
+        if (is_a_to_b) { config.type_id_b } else { config.type_id_a }
+    };
 
     // --- Phase 3: Debit input from player deposit, credit output ---
     let key = DepositKey { trader: ctx.sender() };
@@ -500,10 +614,10 @@ public fun withdraw_fees(
 
     let fc = df::borrow_mut<FeeConfigKey, FeeConfig>(&mut pool.id, FeeConfigKey {});
     if (is_a) {
-        assert!(amount <= fc.fee_pool_a, EInsufficientLiquidity);
+        assert!(amount <= fc.fee_pool_a, EInsufficientFeePool);
         fc.fee_pool_a = fc.fee_pool_a - amount;
     } else {
-        assert!(amount <= fc.fee_pool_b, EInsufficientLiquidity);
+        assert!(amount <= fc.fee_pool_b, EInsufficientFeePool);
         fc.fee_pool_b = fc.fee_pool_b - amount;
     };
 
@@ -571,10 +685,10 @@ public fun roll_fees_to_reserves(
     // Move from fee_pool → reserves (accounting only, tokens already in open inventory)
     let fc = df::borrow_mut<FeeConfigKey, FeeConfig>(&mut pool.id, FeeConfigKey {});
     if (is_a) {
-        assert!(amount <= fc.fee_pool_a, EInsufficientLiquidity);
+        assert!(amount <= fc.fee_pool_a, EInsufficientFeePool);
         fc.fee_pool_a = fc.fee_pool_a - amount;
     } else {
-        assert!(amount <= fc.fee_pool_b, EInsufficientLiquidity);
+        assert!(amount <= fc.fee_pool_b, EInsufficientFeePool);
         fc.fee_pool_b = fc.fee_pool_b - amount;
     };
 
@@ -623,8 +737,33 @@ public fun ssu_id(pool: &AMMPool): ID { pool.ssu_id }
 
 // === Internal: Dynamic Fee Logic ===
 
+/// Compute the *effective* fee BPS for a trade. Worsening trades pay
+/// `base + I·surge/10000`, capped just below 100% (`BPS_DENOM - 1`).
+/// Rebalancing trades and pools without a `FeeConfig` pay `base` flat.
+fun effective_fee_bps(
+    base_fee_bps: u64,
+    imbalance_bps: u64,
+    is_worsening: bool,
+    pool_uid: &UID,
+): u64 {
+    if (!df::exists_(pool_uid, FeeConfigKey {}) || !is_worsening) {
+        return base_fee_bps
+    };
+    let fc = df::borrow<FeeConfigKey, FeeConfig>(pool_uid, FeeConfigKey {});
+    let surge = (imbalance_bps * fc.surge_bps) / BPS_DENOM;
+    let raw_fee_bps = base_fee_bps + surge;
+    if (raw_fee_bps > BPS_DENOM - 1) { BPS_DENOM - 1 } else { raw_fee_bps }
+}
+
 /// Compute fee. Worsening trades pay base + surge. Rebalancing trades pay base only.
-/// Minimum fee is 1 for any trade when fee_bps > 0 (prevents small trades from being free).
+/// Minimum fee is 1 for any trade when `base_fee_bps > 0` (prevents small trades
+/// from being free).
+///
+/// Multiplication is done in u128 to avoid overflow on large `amount_in`. With
+/// `effective <= BPS_DENOM - 1 = 9999` and `amount_in: u64`, the product
+/// `amount_in * effective` overflows u64 around `amount_in ≈ 1.84·10¹⁵`; u128
+/// has headroom for any realistic input. See [Move Book on integer types](
+/// https://move-book.com/move-basics/primitive-types.html#integer-types).
 fun compute_fee(
     amount_in: u64,
     base_fee_bps: u64,
@@ -632,28 +771,18 @@ fun compute_fee(
     is_worsening: bool,
     pool_uid: &UID,
 ): u64 {
-    let has_fee_config = df::exists_(pool_uid, FeeConfigKey {});
-
-    let fee = if (!has_fee_config || !is_worsening) {
-        // Flat base fee: no FeeConfig, or rebalancing trade
-        (amount_in * base_fee_bps) / BPS_DENOM
-    } else {
-        // Worsening trade with dynamic fees
-        let fc = df::borrow<FeeConfigKey, FeeConfig>(pool_uid, FeeConfigKey {});
-        let surge = (imbalance_bps * fc.surge_bps) / BPS_DENOM;
-        let raw_fee_bps = base_fee_bps + surge;
-        let effective_fee_bps = if (raw_fee_bps > BPS_DENOM - 1) { BPS_DENOM - 1 } else {
-            raw_fee_bps
-        };
-        (amount_in * effective_fee_bps) / BPS_DENOM
-    };
-
-    // Minimum fee of 1 for any trade when fees are configured
+    let effective = effective_fee_bps(base_fee_bps, imbalance_bps, is_worsening, pool_uid);
+    let fee = (((amount_in as u128) * (effective as u128)) / (BPS_DENOM as u128)) as u64;
     if (fee == 0 && base_fee_bps > 0) { 1 } else { fee }
 }
 
 /// Compute bonus for rebalancing trades. Returns 0 if worsening or no FeeConfig.
 /// Bonus is capped at fee_pool AND at 3x the fee (normalized to output units).
+///
+/// `(fee_in_out_units * 3) as u64` relies on Move's operator precedence:
+/// `*` binds tighter than `as`, so the multiplication runs in u128 and the
+/// cast truncates. See [Move Book on expression precedence](
+/// https://move-book.com/move-basics/expression.html).
 fun compute_bonus(
     amount_out: u64,
     imbalance_bps: u64,
@@ -668,7 +797,7 @@ fun compute_bonus(
 
     let fc = df::borrow<FeeConfigKey, FeeConfig>(pool_uid, FeeConfigKey {});
     let bonus_rate = (imbalance_bps * fc.bonus_bps) / BPS_DENOM;
-    let raw_bonus = (amount_out * bonus_rate) / BPS_DENOM;
+    let raw_bonus = (((amount_out as u128) * (bonus_rate as u128)) / (BPS_DENOM as u128)) as u64;
 
     // Cap at available fee pool and at 3x the fee (converted to output-token units)
     let available = if (is_a_to_b) { fc.fee_pool_b } else { fc.fee_pool_a };
