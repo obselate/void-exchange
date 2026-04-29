@@ -98,7 +98,13 @@ jobs:
       - name: Bootstrap Sui client config
         run: yes | sui client envs >/dev/null 2>&1 || true
 
+      # `pnpm/action-setup@v4` reads the version from packageManager in
+      # package.json. Our package.json lives at void-exchange/, not the
+      # action's default cwd ($GITHUB_WORKSPACE), so we point at it
+      # explicitly.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: void-exchange/package.json
 
       - uses: actions/setup-node@v4
         with:
