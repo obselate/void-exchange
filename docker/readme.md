@@ -2,7 +2,8 @@
 
 One container with **Sui CLI**, **Node.js**, and **pnpm**. No host tooling needed.
 
-For the full builder-scaffold flow (world deploy → publish contract → run scripts) inside this container, see [builder-flow-docker.md](../docs/builder-flow-docker.md).
+For the broader development workflow (world setup, codegen, build, deploy)
+see [`docs/development.md`](../docs/development.md).
 
 ## Prerequisites
 
@@ -22,14 +23,14 @@ Every start spins up a fresh local Sui node and funds the accounts from the fauc
 ## What’s in the container
 
 - **Sui CLI** — build and publish Move packages, interact with localnet/testnet
-- **Node.js & pnpm** — run world-contracts and builder-scaffold TS scripts
-- **Pre-funded keys** — `ADMIN`, `PLAYER_A`, `PLAYER_B` in `docker/.env.sui` (and in container at `/workspace/builder-scaffold/docker/.env.sui`)
+- **Node.js & pnpm** — run world-contracts and void-exchange TS scripts
+- **Pre-funded keys** — `ADMIN`, `PLAYER_A`, `PLAYER_B` in `docker/.env.sui` (and in container at `/workspace/void-exchange/docker/.env.sui`)
 
 ## Workspace layout
 
 ```
 /workspace/
-├── builder-scaffold/    # full repo (syncs with host)
+├── void-exchange/    # full repo (syncs with host)
 └── world-contracts/     # bind mount — clone here on host, visible inside container
 ```
 
@@ -65,14 +66,14 @@ For TS scripts and world-contracts, manually fill in the `.env` files with your 
 
 | Task | Command |
 |------|---------|
-| View keys | `cat /workspace/builder-scaffold/docker/.env.sui` |
+| View keys | `cat /workspace/void-exchange/docker/.env.sui` |
 | List addresses | `sui client addresses` |
 | Switch network | `sui client switch --env testnet` |
 | Import a key | `sui keytool import <key> ed25519` |
 | Stop local node | `pkill -f "sui start"` |
 | Generate world-contracts .env | `/workspace/scripts/generate-world-env.sh` |
-| Build a contract | `cd /workspace/builder-scaffold/move-contracts/smart_gate_extension && sui move build -e testnet` |
-| Run TS scripts | `cd /workspace/builder-scaffold && pnpm configure-rules` |
+| Build the AMM | `cd /workspace/void-exchange/move-contracts/amm_extension && sui move build -e testnet` |
+| Run TS scripts | `cd /workspace/void-exchange && pnpm authorize-amm` |
 
 ## Connect to local node from host
 
@@ -127,7 +128,7 @@ docker system prune -a --volumes
    `rm Move.lock && sui move build -e testnet`
 
 2. **"Unpublished dependencies: World"?**  
-   Deploy world-contracts first (see [builder-flow.md — Deploy world and create test resources](../docs/builder-flow.md)), then pass its publication file:
+   Deploy world-contracts first (see [`setup-world/readme.md`](../setup-world/readme.md)), then pass its publication file:
 
    ```bash
    sui client test-publish --build-env testnet --pubfile-path ../../deployments/localnet/Pub.localnet.toml

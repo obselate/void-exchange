@@ -8,7 +8,7 @@ services:
       - "9000:9000"
     volumes:
       - sui-config:/root/.sui
-      - ../:/workspace/builder-scaffold
+      - ../:/workspace/void-exchange
       - ./world-contracts:/workspace/world-contracts
 
 volumes:

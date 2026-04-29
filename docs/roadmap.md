@@ -1,37 +1,14 @@
 # Void Exchange Roadmap
 
-This document captures planned but unimplemented work. Each item is grounded in
-concrete intent — usually distilled from an earlier WIP stub or a known
-limitation — and references the Move / SDK docs we will need when we build it.
+Planned work. Each item is grounded in concrete intent and references the
+Move / SDK docs we will need when we build it.
 
-## On-chain quote view function
-
-**Why.** The dapp currently re-implements the StableSwap math, fee, and bonus
-logic in TypeScript to render swap previews. That is a single-source-of-truth
-violation: any change to `amm.move` math silently drifts from the dapp.
-
-**Plan.** Add a Move view function on `amm_extension::amm`:
-
-```move
-public struct SwapQuote has copy, drop {
-    amount_out: u64,
-    fee_amount: u64,
-    fee_bps: u64,           // effective fee BPS for this trade (base + surge)
-    bonus_amount: u64,      // 0 if worsening
-    price_impact_bps: u64,  // (mid_price - exec_price) / mid_price
-    max_input: u64,         // largest amount_in that won't exceed reserve_out
-}
-
-public fun quote(pool: &AMMPool, type_id_in: u64, amount_in: u64): SwapQuote;
-```
-
-The dapp reads this via `devInspectTransactionBlock`
-([Sui docs](https://docs.sui.io/sui-api-ref#sui_devInspectTransactionBlock))
-which executes the call without on-chain side effects, returning BCS bytes that
-the SDK decodes against the published struct layout.
-
-**Status.** Scheduled for Phase 2 (Move audit), implemented alongside the
-contract hardening pass.
+For shipped work, see:
+- [`amm-invariants.md`](./amm-invariants.md) — Phase 2 audit. The on-chain
+  `quote()` view function and the contract hardening pass.
+- [`multi-pool-design.md`](./multi-pool-design.md) — Phase 3 design,
+  implemented in Phase 4. Multi-pool per SSU, cross-SSU registry,
+  pause / delist / relist.
 
 ## Constant-product curve variant
 
@@ -53,46 +30,34 @@ forks. Reference: [Balancer V1 weighted math](https://docs.balancer.fi/concepts/
 for the weighted-CP formula. Move enum support is edition 2024 and is
 documented in the [Move Book](https://move-book.com/move-basics/enum.html).
 
-**Status.** Scheduled after Phase 4 (multi-pool registry). Blocked on
-multi-pool because we need pair-level curve selection before adding curves.
+**Status.** Multi-pool + registry is now in place, so curve selection per
+pool is feasible. Implementation deferred until there's product demand for
+it.
 
-## Multi-pool per SSU + cross-SSU registry
+## Global market view + StationOps admin UI
 
-**Why.** Today each SSU hosts at most one pool. Operating an actual market
-requires N SSUs for N pairs, which is unscalable. Discoverability is also
-zero — there is no way to find pools you haven't been linked to.
+**Why.** Phase 4 ships the on-chain registry but the dapp UI doesn't yet
+consume it. Two follow-ons:
 
-**Plan.** Two-part redesign, designed in Phase 3, implemented in Phase 4:
+1. **Global market view** at `void-exchange.com` (no `?ssu=`) — list every
+   pool from `pools_by_pair` / `pools_by_ssu`, sortable by depth / amp /
+   pair, with a "fly to SSU" link.
+2. **StationOps admin UI** — buttons for `pause` / `unpause` / `delist` /
+   `relist` wired to `buildPausePoolTransaction` etc. in
+   `dapps/src/hooks/useAmmTransactions.ts`.
 
-1. **Multi-pool per SSU.** Make `AMMPool` keyed under the SSU rather than
-   one-per-extension. Reserves remain in the SSU open inventory; per-pool
-   accounting tracks which `(type_id_a, type_id_b)` pair each pool owns.
-2. **Shared `PoolRegistry`.** Single shared object indexing all pools by
-   `(coin_a, coin_b)` pair and by SSU. Created on package publish, written to
-   on `create_pool` / `delist_pool`, read by the dapp for the global market
-   view.
+**Status.** Standard React work; no contract changes needed.
 
-Patterns to study:
-- [DeepBook v3](https://docs.sui.io/standards/deepbookv3) shared `Registry`
-  object for pool indexing.
-- Sui [`sui::table`](https://docs.sui.io/references/framework/sui/table)
-  for keyed collections.
+## AMM setup wizard
 
-## Pause + delist for pool operators
+See [`amm-setup-wizard-plan.md`](./amm-setup-wizard-plan.md). A single
+`tsx ts-scripts/amm_extension/setup-wizard.ts` flow that authorises the
+extension, creates the pool, seeds liquidity, and inits the fee config in
+one prompt-driven session.
 
-**Why.** "No slop" requires emergency response paths. Operators must be able
-to halt swaps without losing reserves, and remove a pool from public discovery
-without destroying its on-chain state.
-
-**Plan.** Two `AMMAdminCap`-gated flags on `Config`:
-
-- `paused: bool` — when true, `swap` / `deposit_for_swap` abort with
-  `EPaused`. `withdraw_from_swap` and admin operations still work so users can
-  reclaim deposits.
-- `delisted: bool` — registry entry hidden but pool object remains. Reverse-
-  able via `relist`.
-
-Implemented in Phase 4 alongside the registry.
+**Status.** Pre-Phase-4 plan; needs minor updates for the registry env
+vars (`AMM_REGISTRY_ID`, `AMM_REGISTRY_INITIAL_SHARED_VERSION`) and the
+new `create_pool` signature before being implemented.
 
 ## Canonical EVE Frontier currency support
 
@@ -101,7 +66,8 @@ against it (analogous to USDC pairs in DeFi) get UX privileges in the dapp:
 default base, price aggregation, etc.
 
 **Status.** Deferred. Requires research on which on-chain token is in
-common circulation. No protocol-level privilege — the dapp surfaces the hint.
+common circulation. No protocol-level privilege — the dapp surfaces the
+hint via the registry's `PoolMeta`.
 
 ## Sponsored transactions for new traders
 

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 TARGET_DIR="${1:-/workspace/world-contracts}"
-ENV_SUI="/workspace/builder-scaffold/docker/.env.sui"
+ENV_SUI="/workspace/void-exchange/docker/.env.sui"
 ENV_EXAMPLE="$TARGET_DIR/env.example"
 TARGET_ENV="$TARGET_DIR/.env"
 
