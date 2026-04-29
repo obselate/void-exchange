@@ -53,6 +53,14 @@ jobs:
       - name: Verify Sui CLI
         run: sui --version
 
+      # Bootstrap a default ~/.sui/sui_config/client.yaml. The first `sui`
+      # subcommand to touch client config prompts interactively to create it,
+      # which deadlocks in CI. We force-feed `yes` once so subsequent calls
+      # find an existing config. The generated keypair is unused — Move
+      # build / test never sign or send transactions.
+      - name: Bootstrap Sui client config
+        run: yes | sui client envs >/dev/null 2>&1 || true
+
       - name: Move lint
         working-directory: void-exchange
         run: sh scripts/lint-move.sh
