@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A single Sui CLI version is the source of truth for both lint and test jobs
+# (they target Move packages under move-contracts/). Bump deliberately and
+# regenerate bindings + re-run tests when changing.
+env:
+  SUI_RELEASE_TAG: mainnet-v1.70.2
+
+jobs:
+  move:
+    name: Move (lint + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install the pinned `sui` CLI from the official release tarball.
+      # We avoid third-party setup actions to keep the supply chain narrow.
+      - name: Install Sui CLI
+        run: |
+          set -euo pipefail
+          tarball="sui-${SUI_RELEASE_TAG}-ubuntu-x86_64.tgz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/MystenLabs/sui/releases/download/${SUI_RELEASE_TAG}/${tarball}"
+          mkdir -p "$HOME/.sui-bin"
+          tar -xzf "$tarball" -C "$HOME/.sui-bin"
+          echo "$HOME/.sui-bin" >> "$GITHUB_PATH"
+
+      - name: Verify Sui CLI
+        run: sui --version
+
+      - name: Move lint
+        run: sh scripts/lint-move.sh
+
+      - name: Move test
+        run: sh scripts/test-move.sh
+
+  typescript:
+    name: TypeScript (typecheck + format)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm fmt:check
+
+      - name: Typecheck
+        run: pnpm typecheck

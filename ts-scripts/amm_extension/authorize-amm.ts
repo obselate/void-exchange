@@ -21,9 +21,14 @@ import {
     initializeContext,
     requireEnv,
 } from "../utils/helper";
-import { requireAmmPackageId } from "./amm-ids";
-import { AMM_MODULE } from "./modules";
 import { getOwnerCap } from "../helpers/storage-unit-extension";
+
+/** AMM extension module names matching the Move package. */
+const AMM_MODULE = { AMM: "amm" } as const;
+
+function requireAmmPackageId(): string {
+    return requireEnv("AMM_PACKAGE_ID");
+}
 
 async function main() {
     console.log("============= Authorize AMM Extension on SSU ==============\n");

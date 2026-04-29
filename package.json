@@ -8,6 +8,8 @@
     "fmt:ts": "prettier --write \"ts-scripts/**/*.ts\"",
     "fmt:check": "prettier --check \"move-contracts/**/*.move\" \"ts-scripts/**/*.ts\"",
     "lint": "sh scripts/lint-move.sh",
+    "test:move": "sh scripts/test-move.sh",
+    "typecheck": "tsc --noEmit",
     "configure-rules": "tsx ts-scripts/smart_gate_extension/configure-rules.ts",
     "authorise-gate-extension": "tsx ts-scripts/smart_gate_extension/authorise-gate-extension.ts",
     "authorise-storage-unit-extension": "tsx ts-scripts/smart_gate_extension/authorise-storage-unit-extension.ts",
