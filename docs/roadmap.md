@@ -46,7 +46,11 @@ consume it. Two follow-ons:
    `relist` wired to `buildPausePoolTransaction` etc. in
    `dapps/src/hooks/useAmmTransactions.ts`.
 
-**Status.** Standard React work; no contract changes needed.
+**Status.** Shipped. The global view lives in
+`dapps/src/components/GlobalMarketView.tsx`, fed by `useAllPools` →
+`fetchAllPoolMeta` (events for the universe + `pool_meta` view per row).
+Lifecycle buttons live in the new "Market Lifecycle" section of
+`StationOps.tsx`, gated by the per-pool `AMMAdminCap`.
 
 ## AMM setup wizard
 
@@ -55,9 +59,11 @@ See [`amm-setup-wizard-plan.md`](./amm-setup-wizard-plan.md). A single
 extension, creates the pool, seeds liquidity, and inits the fee config in
 one prompt-driven session.
 
-**Status.** Pre-Phase-4 plan; needs minor updates for the registry env
-vars (`AMM_REGISTRY_ID`, `AMM_REGISTRY_INITIAL_SHARED_VERSION`) and the
-new `create_pool` signature before being implemented.
+**Status.** Shipped at `ts-scripts/amm_extension/setup-wizard.ts`
+(also `pnpm setup-wizard`). Two PTBs end-to-end: authorize +
+`create_pool` (registry-aware), then `add_liquidity` x2 +
+`set_reserves` + `init_fee_config`. Auto-writes `dapps/.env`. The
+plan doc still describes the original 3-tx flow for reference.
 
 ## Canonical EVE Frontier currency support
 

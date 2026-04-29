@@ -5,8 +5,11 @@ import {
     buildSeedTx, buildSetReservesTx,
     buildInitFeeConfigTx, buildUpdateFeeConfigTx, buildUpdateFeeBpsTx,
     buildWithdrawFeesTx, buildRollFeesToReservesTx, buildRescueItemsTx,
+    buildPausePoolTransaction, buildUnpausePoolTransaction,
+    buildDelistPoolTransaction, buildRelistPoolTransaction,
     type SsuContext, type PoolContext,
 } from "../hooks/useAmmTransactions";
+import { usePoolMeta } from "../hooks/usePoolMeta";
 import { getAmmPackageId, setAmmPackageId, getAmmOriginalPackageId, itemName } from "../config";
 import { execTx } from "../hooks/execTx";
 import { useSsuInventory, InventoryItem } from "../hooks/useSsuInventory";
@@ -100,6 +103,9 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig }: Props) {
 
     // Resolve admin cap for the ACTIVE pool (not just any discovered pool)
     const { data: resolvedAdminCap } = useAdminCap(poolCtx.poolId);
+
+    // Live pause/delist state from the registry — drives the lifecycle UI.
+    const { data: poolMeta } = usePoolMeta(poolCtx.poolId);
 
     // Pool config / IDs
     const [poolIdInput, setPoolIdInput] = useState(localStorage.getItem("amm_pool_id") || "");
@@ -272,6 +278,28 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig }: Props) {
         }
     };
 
+    const handleLifecycle = async (
+        kind: "pause" | "unpause" | "delist" | "relist",
+    ) => {
+        if (!adminCapId) { showError("Set AdminCap ID first"); return; }
+        const builder = {
+            pause: buildPausePoolTransaction,
+            unpause: buildUnpausePoolTransaction,
+            delist: buildDelistPoolTransaction,
+            relist: buildRelistPoolTransaction,
+        }[kind];
+        const verb = { pause: "Pausing", unpause: "Resuming", delist: "Delisting", relist: "Relisting" }[kind];
+        setStatus(`${verb} market...`); setError(null);
+        try {
+            await runTx(() => builder(poolCtx, adminCapId), `${kind} pool`);
+            showStatus(`Market ${kind === "unpause" ? "resumed" : kind === "relist" ? "relisted" : kind + "d"}.`);
+            queryClient.invalidateQueries({ queryKey: ["pool-meta"] });
+            queryClient.invalidateQueries({ queryKey: ["all-pools"] });
+        } catch (e) {
+            showError(e instanceof Error ? e.message : "Failed");
+        }
+    };
+
     const tokenAName = itemName(typeIdA);
     const tokenBName = itemName(typeIdB);
 
@@ -400,6 +428,48 @@ export function StationOps({ ssuConfig, ssuCtx, poolCtx, poolConfig }: Props) {
                     </div>
                 </Row>
                 <button onClick={handleSetReserves} style={{ width: "100%" }}>SET SUPPLY</button>
+            </Section>
+
+            {/* Lifecycle: pause / delist (registry-driven) */}
+            <Section title="Market Lifecycle" defaultOpen={false}>
+                <div style={{
+                    fontSize: 11, padding: "8px 10px", marginBottom: 10,
+                    background: "var(--bg-input)", border: "1px solid var(--border)",
+                    fontFamily: '"Frontier Disket Mono", monospace',
+                }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ color: "var(--text-muted)" }}>Trading</span>
+                        <span style={{ color: poolMeta?.paused ? "var(--amber, #d4a017)" : "var(--green)" }}>
+                            {poolMeta == null ? "—" : poolMeta.paused ? "PAUSED" : "LIVE"}
+                        </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ color: "var(--text-muted)" }}>Discovery</span>
+                        <span style={{ color: poolMeta?.delisted ? "#777" : "var(--green)" }}>
+                            {poolMeta == null ? "—" : poolMeta.delisted ? "DELISTED" : "LISTED"}
+                        </span>
+                    </div>
+                </div>
+                <Row>
+                    <button
+                        onClick={() => handleLifecycle(poolMeta?.paused ? "unpause" : "pause")}
+                        style={{ flex: 1 }}
+                        disabled={!adminCapId}
+                    >
+                        {poolMeta?.paused ? "RESUME TRADING" : "PAUSE TRADING"}
+                    </button>
+                    <button
+                        onClick={() => handleLifecycle(poolMeta?.delisted ? "relist" : "delist")}
+                        style={{ flex: 1 }}
+                        disabled={!adminCapId}
+                    >
+                        {poolMeta?.delisted ? "RELIST MARKET" : "DELIST MARKET"}
+                    </button>
+                </Row>
+                <div style={{ fontSize: 10, color: "#666", marginTop: 4, lineHeight: 1.5 }}>
+                    Pause halts new swaps; withdrawals and admin ops still work.
+                    Delist hides the pool from global discovery and frees the (pair, station) slot.
+                </div>
             </Section>
 
             {/* Pricing controls */}

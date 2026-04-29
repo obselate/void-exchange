@@ -1,11 +1,15 @@
 import { BootScreen } from "./BootScreen";
+import { GlobalMarketView } from "./GlobalMarketView";
 
 type Props = {
     onConnect: () => void;
     market?: { tokenA: string; tokenB: string; banner: string };
+    /** When true, show the cross-SSU market browser. Hidden when the
+     *  user already has a specific SSU targeted via `?ssu=<id>`. */
+    showGlobalMarket?: boolean;
 };
 
-export function LandingPage({ onConnect, market }: Props) {
+export function LandingPage({ onConnect, market, showGlobalMarket }: Props) {
     return (
         <BootScreen>
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 24px" }}>
@@ -47,6 +51,9 @@ export function LandingPage({ onConnect, market }: Props) {
                     )}
                 </div>
             )}
+
+            {/* Cross-SSU market browser (no specific SSU targeted) */}
+            {showGlobalMarket && <GlobalMarketView onConnect={onConnect} />}
 
             {/* System Status */}
             <div className="terminal-panel" data-label="System Status" style={{ marginBottom: 40 }}>
