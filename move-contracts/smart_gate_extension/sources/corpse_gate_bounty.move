@@ -9,12 +9,7 @@ module smart_gate_extension::corpse_gate_bounty;
 
 use smart_gate_extension::config::{Self, AdminCap, XAuth, ExtensionConfig};
 use sui::clock::Clock;
-use world::{
-    access::OwnerCap,
-    character::Character,
-    gate::{Self, Gate},
-    storage_unit::StorageUnit
-};
+use world::{access::OwnerCap, character::Character, gate::{Self, Gate}, storage_unit::StorageUnit};
 
 // === Errors ===
 #[error(code = 0)]

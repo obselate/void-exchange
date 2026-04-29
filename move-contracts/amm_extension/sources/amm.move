@@ -11,10 +11,7 @@ module amm_extension::amm;
 
 use std::string::String;
 use sui::dynamic_field as df;
-use world::{
-    character::Character,
-    storage_unit::StorageUnit,
-};
+use world::{character::Character, storage_unit::StorageUnit};
 
 // === Constants ===
 const BPS_DENOM: u64 = 10_000;
@@ -77,10 +74,10 @@ public struct Config has drop, store {
 }
 
 public struct FeeConfig has drop, store {
-    surge_bps: u64,      // max additional fee at full imbalance
-    bonus_bps: u64,      // max bonus rate at full imbalance
-    fee_pool_a: u64,     // accumulated fees in token A
-    fee_pool_b: u64,     // accumulated fees in token B
+    surge_bps: u64, // max additional fee at full imbalance
+    bonus_bps: u64, // max bonus rate at full imbalance
+    fee_pool_a: u64, // accumulated fees in token A
+    fee_pool_b: u64, // accumulated fees in token B
 }
 
 public struct PlayerDeposit has drop, store {
@@ -121,10 +118,17 @@ public fun deposit_for_swap(
 
     // Move items: owner inventory → open inventory (locked in pool)
     let item = storage_unit.withdraw_item<AMMAuth>(
-        character, AMMAuth {}, type_id, (amount as u32), ctx,
+        character,
+        AMMAuth {},
+        type_id,
+        (amount as u32),
+        ctx,
     );
     storage_unit.deposit_to_open_inventory<AMMAuth>(
-        character, item, AMMAuth {}, ctx,
+        character,
+        item,
+        AMMAuth {},
+        ctx,
     );
 
     // Credit player's deposit balance
@@ -171,10 +175,17 @@ public fun withdraw_from_swap(
 
     // Move items: open inventory → owner inventory (player picks up via game UI)
     let item = storage_unit.withdraw_from_open_inventory<AMMAuth>(
-        character, AMMAuth {}, type_id, (amount as u32), ctx,
+        character,
+        AMMAuth {},
+        type_id,
+        (amount as u32),
+        ctx,
     );
     storage_unit.deposit_item<AMMAuth>(
-        character, item, AMMAuth {}, ctx,
+        character,
+        item,
+        AMMAuth {},
+        ctx,
     );
 }
 
@@ -209,13 +220,22 @@ public fun create_pool(
     };
     let pool_id = object::id(&pool);
 
-    df::add(&mut pool.id, ConfigKey {}, Config {
-        type_id_a, type_id_b,
-        reserve_a, reserve_b,
-        target_a: reserve_a, target_b: reserve_b,
-        amp, fee_bps, banner,
-        owner: ctx.sender(),
-    });
+    df::add(
+        &mut pool.id,
+        ConfigKey {},
+        Config {
+            type_id_a,
+            type_id_b,
+            reserve_a,
+            reserve_b,
+            target_a: reserve_a,
+            target_b: reserve_b,
+            amp,
+            fee_bps,
+            banner,
+            owner: ctx.sender(),
+        },
+    );
 
     transfer::share_object(pool);
     AMMAdminCap { id: object::new(ctx), pool_id }
@@ -232,12 +252,16 @@ public fun init_fee_config(
     assert!(!df::exists_(&pool.id, FeeConfigKey {}), EFeeConfigExists);
     assert!(surge_bps <= BPS_DENOM && bonus_bps <= BPS_DENOM, EInvalidFee);
 
-    df::add(&mut pool.id, FeeConfigKey {}, FeeConfig {
-        surge_bps,
-        bonus_bps,
-        fee_pool_a: 0,
-        fee_pool_b: 0,
-    });
+    df::add(
+        &mut pool.id,
+        FeeConfigKey {},
+        FeeConfig {
+            surge_bps,
+            bonus_bps,
+            fee_pool_a: 0,
+            fee_pool_b: 0,
+        },
+    );
 }
 
 /// Update dynamic fee parameters.
@@ -255,11 +279,7 @@ public fun update_fee_config(
 }
 
 /// Update base trade fee.
-public fun update_fee_bps(
-    pool: &mut AMMPool,
-    admin_cap: &AMMAdminCap,
-    fee_bps: u64,
-) {
+public fun update_fee_bps(pool: &mut AMMPool, admin_cap: &AMMAdminCap, fee_bps: u64) {
     assert!(admin_cap.pool_id == object::id(pool), ENotOwner);
     assert!(fee_bps <= BPS_DENOM, EInvalidFee);
     df::borrow_mut<ConfigKey, Config>(&mut pool.id, ConfigKey {}).fee_bps = fee_bps;
@@ -294,14 +314,41 @@ public fun swap(
     assert!(amount_in > 0, EZeroAmount);
 
     // --- Phase 1: Read config values (immutable borrow scope) ---
-    let (is_a_to_b, reserve_in, reserve_out, type_id_out, base_fee_bps, amp, target_in, target_out) = {
+    let (
+        is_a_to_b,
+        reserve_in,
+        reserve_out,
+        type_id_out,
+        base_fee_bps,
+        amp,
+        target_in,
+        target_out,
+    ) = {
         let config = df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {});
         assert!(type_id_in == config.type_id_a || type_id_in == config.type_id_b, EInvalidTypeId);
         let a2b = type_id_in == config.type_id_a;
         if (a2b) {
-            (a2b, config.reserve_a, config.reserve_b, config.type_id_b, config.fee_bps, config.amp, config.target_a, config.target_b)
+            (
+                a2b,
+                config.reserve_a,
+                config.reserve_b,
+                config.type_id_b,
+                config.fee_bps,
+                config.amp,
+                config.target_a,
+                config.target_b,
+            )
         } else {
-            (a2b, config.reserve_b, config.reserve_a, config.type_id_a, config.fee_bps, config.amp, config.target_b, config.target_a)
+            (
+                a2b,
+                config.reserve_b,
+                config.reserve_a,
+                config.type_id_a,
+                config.fee_bps,
+                config.amp,
+                config.target_b,
+                config.target_a,
+            )
         }
     };
 
@@ -310,8 +357,12 @@ public fun swap(
     let actual_cross = (reserve_in as u128) * (target_out as u128);
     let target_cross = (reserve_out as u128) * (target_in as u128);
     let cross_sum = actual_cross + target_cross;
-    let cross_diff = if (actual_cross > target_cross) { actual_cross - target_cross } else { target_cross - actual_cross };
-    let imbalance_bps = if (cross_sum > 0) { ((cross_diff * (BPS_DENOM as u128)) / cross_sum) as u64 } else { 0 };
+    let cross_diff = if (actual_cross > target_cross) { actual_cross - target_cross } else {
+        target_cross - actual_cross
+    };
+    let imbalance_bps = if (cross_sum > 0) {
+        ((cross_diff * (BPS_DENOM as u128)) / cross_sum) as u64
+    } else { 0 };
 
     // Worsening = selling the side that's already oversupplied relative to target
     let is_worsening = actual_cross > target_cross;
@@ -324,7 +375,16 @@ public fun swap(
     assert!(amount_out >= min_out, EInsufficientOutput);
     assert!(amount_out < reserve_out, EInsufficientLiquidity);
 
-    let bonus = compute_bonus(amount_out, imbalance_bps, is_worsening, is_a_to_b, fee, target_in, target_out, &pool.id);
+    let bonus = compute_bonus(
+        amount_out,
+        imbalance_bps,
+        is_worsening,
+        is_a_to_b,
+        fee,
+        target_in,
+        target_out,
+        &pool.id,
+    );
     let total_output = amount_out + bonus;
 
     // --- Phase 3: Debit input from player deposit, credit output ---
@@ -358,9 +418,12 @@ public fun swap(
     sui::event::emit(SwapWithBonusEvent {
         pool_id,
         trader: ctx.sender(),
-        type_id_in, type_id_out,
-        amount_in, amount_out,
-        fee, bonus,
+        type_id_in,
+        type_id_out,
+        amount_in,
+        amount_out,
+        fee,
+        bonus,
     });
 }
 
@@ -388,10 +451,17 @@ public fun add_liquidity(
 
     // Move items: main → open (locked in liquidity reserves)
     let item = storage_unit.withdraw_item<AMMAuth>(
-        character, AMMAuth {}, type_id, amount, ctx,
+        character,
+        AMMAuth {},
+        type_id,
+        amount,
+        ctx,
     );
     storage_unit.deposit_to_open_inventory<AMMAuth>(
-        character, item, AMMAuth {}, ctx,
+        character,
+        item,
+        AMMAuth {},
+        ctx,
     );
 }
 
@@ -439,10 +509,17 @@ public fun withdraw_fees(
 
     // Move tokens: open → main (admin withdraws via game UI)
     let item = storage_unit.withdraw_from_open_inventory<AMMAuth>(
-        character, AMMAuth {}, type_id, (amount as u32), ctx,
+        character,
+        AMMAuth {},
+        type_id,
+        (amount as u32),
+        ctx,
     );
     storage_unit.deposit_item<AMMAuth>(
-        character, item, AMMAuth {}, ctx,
+        character,
+        item,
+        AMMAuth {},
+        ctx,
     );
 }
 
@@ -462,10 +539,17 @@ public fun rescue_items(
     assert!(pool.ssu_id == object::id(storage_unit), ESSUMismatch);
     assert!(amount > 0, EZeroAmount);
     let item = storage_unit.withdraw_from_open_inventory<AMMAuth>(
-        character, AMMAuth {}, type_id, amount, ctx,
+        character,
+        AMMAuth {},
+        type_id,
+        amount,
+        ctx,
     );
     storage_unit.deposit_item<AMMAuth>(
-        character, item, AMMAuth {}, ctx,
+        character,
+        item,
+        AMMAuth {},
+        ctx,
     );
 }
 
@@ -503,32 +587,51 @@ public fun roll_fees_to_reserves(
 }
 
 /// Update banner.
-public fun update_banner(
-    pool: &mut AMMPool,
-    admin_cap: &AMMAdminCap,
-    new_banner: String,
-) {
+public fun update_banner(pool: &mut AMMPool, admin_cap: &AMMAdminCap, new_banner: String) {
     assert!(admin_cap.pool_id == object::id(pool), ENotOwner);
     df::borrow_mut<ConfigKey, Config>(&mut pool.id, ConfigKey {}).banner = new_banner;
 }
 
 // === View ===
-public fun reserve_a(pool: &AMMPool): u64 { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).reserve_a }
-public fun reserve_b(pool: &AMMPool): u64 { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).reserve_b }
-public fun target_a(pool: &AMMPool): u64 { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).target_a }
-public fun target_b(pool: &AMMPool): u64 { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).target_b }
-public fun banner(pool: &AMMPool): String { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).banner }
-public fun fee_bps(pool: &AMMPool): u64 { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).fee_bps }
+public fun reserve_a(pool: &AMMPool): u64 {
+    df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).reserve_a
+}
+
+public fun reserve_b(pool: &AMMPool): u64 {
+    df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).reserve_b
+}
+
+public fun target_a(pool: &AMMPool): u64 {
+    df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).target_a
+}
+
+public fun target_b(pool: &AMMPool): u64 {
+    df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).target_b
+}
+
+public fun banner(pool: &AMMPool): String {
+    df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).banner
+}
+
+public fun fee_bps(pool: &AMMPool): u64 {
+    df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).fee_bps
+}
+
 public fun amp(pool: &AMMPool): u64 { df::borrow<ConfigKey, Config>(&pool.id, ConfigKey {}).amp }
+
 public fun ssu_id(pool: &AMMPool): ID { pool.ssu_id }
 
 // === Internal: Dynamic Fee Logic ===
 
 /// Compute fee. Worsening trades pay base + surge. Rebalancing trades pay base only.
 /// Minimum fee is 1 for any trade when fee_bps > 0 (prevents small trades from being free).
-fun compute_fee(amount_in: u64, base_fee_bps: u64, imbalance_bps: u64,
-    is_worsening: bool, pool_uid: &UID): u64 {
-
+fun compute_fee(
+    amount_in: u64,
+    base_fee_bps: u64,
+    imbalance_bps: u64,
+    is_worsening: bool,
+    pool_uid: &UID,
+): u64 {
     let has_fee_config = df::exists_(pool_uid, FeeConfigKey {});
 
     let fee = if (!has_fee_config || !is_worsening) {
@@ -539,7 +642,9 @@ fun compute_fee(amount_in: u64, base_fee_bps: u64, imbalance_bps: u64,
         let fc = df::borrow<FeeConfigKey, FeeConfig>(pool_uid, FeeConfigKey {});
         let surge = (imbalance_bps * fc.surge_bps) / BPS_DENOM;
         let raw_fee_bps = base_fee_bps + surge;
-        let effective_fee_bps = if (raw_fee_bps > BPS_DENOM - 1) { BPS_DENOM - 1 } else { raw_fee_bps };
+        let effective_fee_bps = if (raw_fee_bps > BPS_DENOM - 1) { BPS_DENOM - 1 } else {
+            raw_fee_bps
+        };
         (amount_in * effective_fee_bps) / BPS_DENOM
     };
 
@@ -549,9 +654,16 @@ fun compute_fee(amount_in: u64, base_fee_bps: u64, imbalance_bps: u64,
 
 /// Compute bonus for rebalancing trades. Returns 0 if worsening or no FeeConfig.
 /// Bonus is capped at fee_pool AND at 3x the fee (normalized to output units).
-fun compute_bonus(amount_out: u64, imbalance_bps: u64, is_worsening: bool,
-    is_a_to_b: bool, fee: u64, target_in: u64, target_out: u64, pool_uid: &UID): u64 {
-
+fun compute_bonus(
+    amount_out: u64,
+    imbalance_bps: u64,
+    is_worsening: bool,
+    is_a_to_b: bool,
+    fee: u64,
+    target_in: u64,
+    target_out: u64,
+    pool_uid: &UID,
+): u64 {
     if (is_worsening || !df::exists_(pool_uid, FeeConfigKey {})) return 0;
 
     let fc = df::borrow<FeeConfigKey, FeeConfig>(pool_uid, FeeConfigKey {});
@@ -648,18 +760,49 @@ public fun stable_get_d_test(x: u128, y: u128, a: u64): u128 {
 }
 
 #[test_only]
-public fun stable_output_test(r_in: u64, r_out: u64, a: u64, net_in: u64, t_in: u64, t_out: u64): u64 {
+public fun stable_output_test(
+    r_in: u64,
+    r_out: u64,
+    a: u64,
+    net_in: u64,
+    t_in: u64,
+    t_out: u64,
+): u64 {
     stable_output(r_in, r_out, a, net_in, t_in, t_out)
 }
 
 #[test_only]
-public fun compute_fee_test(pool: &AMMPool, amount_in: u64, base_fee_bps: u64, imbalance_bps: u64, is_worsening: bool): u64 {
+public fun compute_fee_test(
+    pool: &AMMPool,
+    amount_in: u64,
+    base_fee_bps: u64,
+    imbalance_bps: u64,
+    is_worsening: bool,
+): u64 {
     compute_fee(amount_in, base_fee_bps, imbalance_bps, is_worsening, &pool.id)
 }
 
 #[test_only]
-public fun compute_bonus_test(pool: &AMMPool, amount_out: u64, imbalance_bps: u64, is_worsening: bool, is_a_to_b: bool, fee: u64, target_in: u64, target_out: u64): u64 {
-    compute_bonus(amount_out, imbalance_bps, is_worsening, is_a_to_b, fee, target_in, target_out, &pool.id)
+public fun compute_bonus_test(
+    pool: &AMMPool,
+    amount_out: u64,
+    imbalance_bps: u64,
+    is_worsening: bool,
+    is_a_to_b: bool,
+    fee: u64,
+    target_in: u64,
+    target_out: u64,
+): u64 {
+    compute_bonus(
+        amount_out,
+        imbalance_bps,
+        is_worsening,
+        is_a_to_b,
+        fee,
+        target_in,
+        target_out,
+        &pool.id,
+    )
 }
 
 #[test_only]

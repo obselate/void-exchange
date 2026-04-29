@@ -52,6 +52,27 @@ pnpm install
 cp .env.example .env       # populate with your keys + package IDs
 ```
 
+### `world-contracts` sibling dependency
+
+Every Move package under `move-contracts/` declares a local-path dependency on
+`world-contracts`:
+
+```toml
+world = { local = "../../../world-contracts/contracts/world" }
+```
+
+This means `world-contracts` must live as a sibling of `void-exchange` in your
+workspace. Clone it once at the pinned tag (CI uses the same tag — see
+`WORLD_CONTRACTS_REF` in `.github/workflows/ci.yml`):
+
+```sh
+cd ..   # parent of void-exchange
+git clone -b v0.0.18 https://github.com/evefrontier/world-contracts.git
+```
+
+Without this checkout, `pnpm lint` and `pnpm test:move` will fail with
+unresolved-dependency errors.
+
 ### Move
 
 ```sh

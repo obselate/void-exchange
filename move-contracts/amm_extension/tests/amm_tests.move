@@ -12,7 +12,7 @@ use world::{
     network_node::{Self, NetworkNode},
     object_registry::ObjectRegistry,
     storage_unit::{Self, StorageUnit},
-    test_helpers::{Self, governor, admin, user_a, user_b, tenant},
+    test_helpers::{Self, governor, admin, user_a, user_b, tenant}
 };
 
 // === Constants ===
@@ -125,7 +125,14 @@ fun create_character(ts: &mut ts::Scenario, user: address, item_id: u32): ID {
     let admin_acl = ts::take_shared<AdminACL>(ts);
     let mut registry = ts::take_shared<ObjectRegistry>(ts);
     let character = character::create_character(
-        &mut registry, &admin_acl, item_id, tenant(), 100, user, utf8(b"name"), ts::ctx(ts),
+        &mut registry,
+        &admin_acl,
+        item_id,
+        tenant(),
+        100,
+        user,
+        utf8(b"name"),
+        ts::ctx(ts),
     );
     let character_id = object::id(&character);
     character.share_character(&admin_acl, ts.ctx());
@@ -140,9 +147,16 @@ fun create_network_node(ts: &mut ts::Scenario, character_id: ID): ID {
     let character = ts::take_shared_by_id<Character>(ts, character_id);
     let admin_acl = ts::take_shared<AdminACL>(ts);
     let nwn = network_node::anchor(
-        &mut registry, &character, &admin_acl,
-        NWN_ITEM_ID, NWN_TYPE_ID, LOCATION_HASH,
-        FUEL_MAX_CAPACITY, FUEL_BURN_RATE_IN_MS, MAX_PRODUCTION, ts.ctx(),
+        &mut registry,
+        &character,
+        &admin_acl,
+        NWN_ITEM_ID,
+        NWN_TYPE_ID,
+        LOCATION_HASH,
+        FUEL_MAX_CAPACITY,
+        FUEL_BURN_RATE_IN_MS,
+        MAX_PRODUCTION,
+        ts.ctx(),
     );
     let id = object::id(&nwn);
     nwn.share_network_node(&admin_acl, ts.ctx());
@@ -161,8 +175,15 @@ fun create_storage_unit(ts: &mut ts::Scenario, character_id: ID): (ID, ID) {
     let storage_unit_id = {
         let admin_acl = ts::take_shared<AdminACL>(ts);
         let storage_unit = storage_unit::anchor(
-            &mut registry, &mut nwn, &character, &admin_acl,
-            STORAGE_ITEM_ID, STORAGE_TYPE_ID, MAX_CAPACITY, LOCATION_HASH, ts.ctx(),
+            &mut registry,
+            &mut nwn,
+            &character,
+            &admin_acl,
+            STORAGE_ITEM_ID,
+            STORAGE_TYPE_ID,
+            MAX_CAPACITY,
+            LOCATION_HASH,
+            ts.ctx(),
         );
         let storage_unit_id = object::id(&storage_unit);
         storage_unit.share_storage_unit(&admin_acl, ts.ctx());
@@ -176,13 +197,18 @@ fun create_storage_unit(ts: &mut ts::Scenario, character_id: ID): (ID, ID) {
 }
 
 fun online_storage_unit(
-    ts: &mut ts::Scenario, user: address, character_id: ID, storage_id: ID, nwn_id: ID,
+    ts: &mut ts::Scenario,
+    user: address,
+    character_id: ID,
+    storage_id: ID,
+    nwn_id: ID,
 ) {
     let clock = clock::create_for_testing(ts.ctx());
     ts::next_tx(ts, user);
     let mut character = ts::take_shared_by_id<Character>(ts, character_id);
     let (owner_cap, receipt) = character.borrow_owner_cap<NetworkNode>(
-        ts::most_recent_receiving_ticket<OwnerCap<NetworkNode>>(&character_id), ts.ctx(),
+        ts::most_recent_receiving_ticket<OwnerCap<NetworkNode>>(&character_id),
+        ts.ctx(),
     );
     ts::next_tx(ts, user);
     {
@@ -204,7 +230,8 @@ fun online_storage_unit(
         let mut nwn = ts::take_shared_by_id<NetworkNode>(ts, nwn_id);
         let energy_config = ts::take_shared<EnergyConfig>(ts);
         let (owner_cap, receipt) = character.borrow_owner_cap<StorageUnit>(
-            ts::most_recent_receiving_ticket<OwnerCap<StorageUnit>>(&character_id), ts.ctx(),
+            ts::most_recent_receiving_ticket<OwnerCap<StorageUnit>>(&character_id),
+            ts.ctx(),
         );
         storage_unit.online(&mut nwn, &energy_config, &owner_cap);
         assert!(storage_unit.status().status_to_u8() == STATUS_ONLINE, 0);
@@ -218,18 +245,31 @@ fun online_storage_unit(
 }
 
 fun mint_token<T: key>(
-    ts: &mut ts::Scenario, storage_id: ID, character_id: ID, user: address,
-    item_id: u64, type_id: u64, volume: u64, quantity: u32,
+    ts: &mut ts::Scenario,
+    storage_id: ID,
+    character_id: ID,
+    user: address,
+    item_id: u64,
+    type_id: u64,
+    volume: u64,
+    quantity: u32,
 ) {
     ts::next_tx(ts, user);
     {
         let mut character = ts::take_shared_by_id<Character>(ts, character_id);
         let (owner_cap, receipt) = character.borrow_owner_cap<T>(
-            ts::most_recent_receiving_ticket<OwnerCap<T>>(&character_id), ts.ctx(),
+            ts::most_recent_receiving_ticket<OwnerCap<T>>(&character_id),
+            ts.ctx(),
         );
         let mut storage_unit = ts::take_shared_by_id<StorageUnit>(ts, storage_id);
         storage_unit.game_item_to_chain_inventory_test<T>(
-            &character, &owner_cap, item_id, type_id, volume, quantity, ts.ctx(),
+            &character,
+            &owner_cap,
+            item_id,
+            type_id,
+            volume,
+            quantity,
+            ts.ctx(),
         );
         character.return_owner_cap(owner_cap, receipt);
         ts::return_shared(character);
@@ -272,14 +312,26 @@ fun setup_pool_env(
     // Seed SSU main inventory (AMM liquidity — keyed by SSU owner cap)
     if (liq_a > 0) {
         mint_token<StorageUnit>(
-            ts, storage_id, owner_char_id, user_b(),
-            TOKEN_A_ITEM_ID, TOKEN_A_TYPE_ID, TOKEN_A_VOLUME, liq_a,
+            ts,
+            storage_id,
+            owner_char_id,
+            user_b(),
+            TOKEN_A_ITEM_ID,
+            TOKEN_A_TYPE_ID,
+            TOKEN_A_VOLUME,
+            liq_a,
         );
     };
     if (liq_b > 0) {
         mint_token<StorageUnit>(
-            ts, storage_id, owner_char_id, user_b(),
-            TOKEN_B_ITEM_ID, TOKEN_B_TYPE_ID, TOKEN_B_VOLUME, liq_b,
+            ts,
+            storage_id,
+            owner_char_id,
+            user_b(),
+            TOKEN_B_ITEM_ID,
+            TOKEN_B_TYPE_ID,
+            TOKEN_B_VOLUME,
+            liq_b,
         );
     };
 
@@ -287,14 +339,26 @@ fun setup_pool_env(
     // In production, the trader deposits via game UI which puts items in main inventory.
     if (trader_a > 0) {
         mint_token<StorageUnit>(
-            ts, storage_id, owner_char_id, user_b(),
-            TOKEN_A_ITEM_ID, TOKEN_A_TYPE_ID, TOKEN_A_VOLUME, trader_a,
+            ts,
+            storage_id,
+            owner_char_id,
+            user_b(),
+            TOKEN_A_ITEM_ID,
+            TOKEN_A_TYPE_ID,
+            TOKEN_A_VOLUME,
+            trader_a,
         );
     };
     if (trader_b > 0) {
         mint_token<StorageUnit>(
-            ts, storage_id, owner_char_id, user_b(),
-            TOKEN_B_ITEM_ID, TOKEN_B_TYPE_ID, TOKEN_B_VOLUME, trader_b,
+            ts,
+            storage_id,
+            owner_char_id,
+            user_b(),
+            TOKEN_B_ITEM_ID,
+            TOKEN_B_TYPE_ID,
+            TOKEN_B_VOLUME,
+            trader_b,
         );
     };
 
@@ -304,7 +368,8 @@ fun setup_pool_env(
         let mut storage_unit = ts::take_shared_by_id<StorageUnit>(ts, storage_id);
         let mut character = ts::take_shared_by_id<Character>(ts, owner_char_id);
         let (owner_cap, receipt) = character.borrow_owner_cap<StorageUnit>(
-            ts::most_recent_receiving_ticket<OwnerCap<StorageUnit>>(&owner_char_id), ts.ctx(),
+            ts::most_recent_receiving_ticket<OwnerCap<StorageUnit>>(&owner_char_id),
+            ts.ctx(),
         );
         storage_unit.authorize_extension<AMMAuth>(&owner_cap);
         character.return_owner_cap(owner_cap, receipt);
@@ -336,9 +401,12 @@ fun create_test_pool(
     let storage_unit = ts::take_shared_by_id<StorageUnit>(ts, storage_id);
     let admin_cap = amm::create_pool(
         &storage_unit,
-        TOKEN_A_TYPE_ID, TOKEN_B_TYPE_ID,
-        reserve_a, reserve_b,
-        amp, fee_bps,
+        TOKEN_A_TYPE_ID,
+        TOKEN_B_TYPE_ID,
+        reserve_a,
+        reserve_b,
+        amp,
+        fee_bps,
         utf8(b"Test pool"),
         ts.ctx(),
     );
@@ -358,12 +426,22 @@ fun create_test_pool(
         let character = ts::take_shared_by_id<Character>(ts, owner_char_id);
 
         amm::add_liquidity(
-            &mut pool, &admin_cap, &mut storage_unit, &character,
-            TOKEN_A_TYPE_ID, (reserve_a as u32), ts.ctx(),
+            &mut pool,
+            &admin_cap,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            (reserve_a as u32),
+            ts.ctx(),
         );
         amm::add_liquidity(
-            &mut pool, &admin_cap, &mut storage_unit, &character,
-            TOKEN_B_TYPE_ID, (reserve_b as u32), ts.ctx(),
+            &mut pool,
+            &admin_cap,
+            &mut storage_unit,
+            &character,
+            TOKEN_B_TYPE_ID,
+            (reserve_b as u32),
+            ts.ctx(),
         );
 
         // add_liquidity increments reserves on top of create_pool's initial values, so reset
@@ -387,8 +465,13 @@ fun create_test_pool(
 /// Full flow: deposit_for_swap → swap → withdraw_from_swap.
 fun test_swap_a_for_b() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _trader_char_id, _ssu_cap, _trader_cap) =
-        setup_pool_env(&mut ts, 100, 100, 10, 0);
+    let (storage_id, owner_char_id, _trader_char_id, _ssu_cap, _trader_cap) = setup_pool_env(
+        &mut ts,
+        100,
+        100,
+        10,
+        0,
+    );
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -400,8 +483,12 @@ fun test_swap_a_for_b() {
         let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
 
         amm::deposit_for_swap(
-            &mut pool, &mut storage_unit, &character,
-            TOKEN_A_TYPE_ID, 10, ts.ctx(),
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            10,
+            ts.ctx(),
         );
 
         // Verify deposit balance
@@ -421,7 +508,9 @@ fun test_swap_a_for_b() {
 
         amm::swap(
             &mut pool,
-            TOKEN_A_TYPE_ID, 10, 1,
+            TOKEN_A_TYPE_ID,
+            10,
+            1,
             ts.ctx(),
         );
 
@@ -442,8 +531,12 @@ fun test_swap_a_for_b() {
 
         let (_, bb) = amm::player_deposit(&pool, user_b());
         amm::withdraw_from_swap(
-            &mut pool, &mut storage_unit, &character,
-            TOKEN_B_TYPE_ID, bb, ts.ctx(),
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_B_TYPE_ID,
+            bb,
+            ts.ctx(),
         );
 
         // Verify deposit fully withdrawn
@@ -478,8 +571,13 @@ fun test_swap_a_for_b() {
 /// Stable pool: 1000/1000, amp=100, 300 bps fee. Swap 100 B → A.
 fun test_swap_b_for_a_with_fees() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _trader_char_id, _ssu_cap, _trader_cap) =
-        setup_pool_env(&mut ts, 1000, 1000, 0, 100);
+    let (storage_id, owner_char_id, _trader_char_id, _ssu_cap, _trader_cap) = setup_pool_env(
+        &mut ts,
+        1000,
+        1000,
+        0,
+        100,
+    );
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 1000, 1000, 100, 300);
 
@@ -491,16 +589,24 @@ fun test_swap_b_for_a_with_fees() {
         let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
 
         amm::deposit_for_swap(
-            &mut pool, &mut storage_unit, &character,
-            TOKEN_B_TYPE_ID, 100, ts.ctx(),
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_B_TYPE_ID,
+            100,
+            ts.ctx(),
         );
 
         amm::swap(&mut pool, TOKEN_B_TYPE_ID, 100, 1, ts.ctx());
 
         let (ba, _) = amm::player_deposit(&pool, user_b());
         amm::withdraw_from_swap(
-            &mut pool, &mut storage_unit, &character,
-            TOKEN_A_TYPE_ID, ba, ts.ctx(),
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            ba,
+            ts.ctx(),
         );
 
         ts::return_shared(character);
@@ -530,8 +636,13 @@ fun test_swap_b_for_a_with_fees() {
 /// Pool with dynamic fees: worsening trades pay surge, rebalancing gets bonus.
 fun test_dynamic_fees_and_bonus() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _trader_char_id, _ssu_cap, _trader_cap) =
-        setup_pool_env(&mut ts, 1000, 1000, 200, 200);
+    let (storage_id, owner_char_id, _trader_char_id, _ssu_cap, _trader_cap) = setup_pool_env(
+        &mut ts,
+        1000,
+        1000,
+        200,
+        200,
+    );
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 1000, 1000, 100, 100);
 
@@ -553,8 +664,12 @@ fun test_dynamic_fees_and_bonus() {
         let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
 
         amm::deposit_for_swap(
-            &mut pool, &mut storage_unit, &character,
-            TOKEN_A_TYPE_ID, 100, ts.ctx(),
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            100,
+            ts.ctx(),
         );
         amm::swap(&mut pool, TOKEN_A_TYPE_ID, 100, 1, ts.ctx());
 
@@ -584,8 +699,13 @@ fun test_dynamic_fees_and_bonus() {
 /// Admin adds more liquidity after pool creation.
 fun test_add_liquidity() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, trader_char_id, ssu_cap, trader_cap) =
-        setup_pool_env(&mut ts, 200, 200, 0, 0);
+    let (storage_id, owner_char_id, trader_char_id, ssu_cap, trader_cap) = setup_pool_env(
+        &mut ts,
+        200,
+        200,
+        0,
+        0,
+    );
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -597,12 +717,18 @@ fun test_add_liquidity() {
         let mut storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
         let mut character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
         let (owner_cap, receipt) = character.borrow_owner_cap<StorageUnit>(
-            ts::most_recent_receiving_ticket<OwnerCap<StorageUnit>>(&owner_char_id), ts.ctx(),
+            ts::most_recent_receiving_ticket<OwnerCap<StorageUnit>>(&owner_char_id),
+            ts.ctx(),
         );
 
         amm::add_liquidity(
-            &mut pool, &admin_cap, &mut storage_unit, &character,
-            TOKEN_A_TYPE_ID, 50, ts.ctx(),
+            &mut pool,
+            &admin_cap,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            50,
+            ts.ctx(),
         );
 
         character.return_owner_cap(owner_cap, receipt);
@@ -632,8 +758,7 @@ fun test_add_liquidity() {
 /// Admin syncs reserves with actual inventory.
 fun test_set_reserves() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -659,8 +784,7 @@ fun test_set_reserves() {
 /// Admin updates fee bps.
 fun test_update_fee_bps() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -681,8 +805,7 @@ fun test_update_fee_bps() {
 /// Admin updates target ratio.
 fun test_update_target_ratio() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -704,8 +827,7 @@ fun test_update_target_ratio() {
 /// Admin updates banner.
 fun test_update_banner() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -731,8 +853,7 @@ fun test_update_banner() {
 /// Non-owner cannot set reserves.
 fun test_set_reserves_not_owner() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -742,8 +863,12 @@ fun test_set_reserves_not_owner() {
         let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
         let wrong_cap = amm::create_pool(
             &storage_unit,
-            TOKEN_A_TYPE_ID, TOKEN_B_TYPE_ID,
-            50, 50, 10, 0,
+            TOKEN_A_TYPE_ID,
+            TOKEN_B_TYPE_ID,
+            50,
+            50,
+            10,
+            0,
             utf8(b"Other pool"),
             ts.ctx(),
         );
@@ -765,8 +890,13 @@ fun test_set_reserves_not_owner() {
 /// Swap with invalid type_id should abort.
 fun test_swap_invalid_type_id() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _trader_char_id, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 10, 0);
+    let (storage_id, owner_char_id, _trader_char_id, _, _) = setup_pool_env(
+        &mut ts,
+        100,
+        100,
+        10,
+        0,
+    );
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -788,8 +918,13 @@ fun test_swap_invalid_type_id() {
 /// Swap with min_out too high should abort.
 fun test_swap_min_out_too_high() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _trader_char_id, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 10, 0);
+    let (storage_id, owner_char_id, _trader_char_id, _, _) = setup_pool_env(
+        &mut ts,
+        100,
+        100,
+        10,
+        0,
+    );
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -801,8 +936,12 @@ fun test_swap_min_out_too_high() {
         let character = ts::take_shared_by_id<Character>(&ts, owner_char_id);
 
         amm::deposit_for_swap(
-            &mut pool, &mut storage_unit, &character,
-            TOKEN_A_TYPE_ID, 10, ts.ctx(),
+            &mut pool,
+            &mut storage_unit,
+            &character,
+            TOKEN_A_TYPE_ID,
+            10,
+            ts.ctx(),
         );
 
         // min_out = 999 is impossibly high
@@ -821,8 +960,13 @@ fun test_swap_min_out_too_high() {
 /// Swap with amount_in = 0 should abort.
 fun test_swap_zero_amount() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _trader_char_id, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 10, 0);
+    let (storage_id, owner_char_id, _trader_char_id, _, _) = setup_pool_env(
+        &mut ts,
+        100,
+        100,
+        10,
+        0,
+    );
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -843,8 +987,7 @@ fun test_swap_zero_amount() {
 /// Swap without deposit should abort.
 fun test_swap_without_deposit() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 10, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 10, 0);
 
     create_test_pool(&mut ts, storage_id, owner_char_id, 100, 100, 50, 30);
 
@@ -871,16 +1014,19 @@ fun test_swap_without_deposit() {
 /// amp = 0 should fail.
 fun test_create_pool_zero_amp() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
 
     ts::next_tx(&mut ts, user_b());
     {
         let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
         let admin_cap = amm::create_pool(
             &storage_unit,
-            TOKEN_A_TYPE_ID, TOKEN_B_TYPE_ID,
-            100, 100, 0, 30,
+            TOKEN_A_TYPE_ID,
+            TOKEN_B_TYPE_ID,
+            100,
+            100,
+            0,
+            30,
             utf8(b"Bad pool"),
             ts.ctx(),
         );
@@ -896,16 +1042,19 @@ fun test_create_pool_zero_amp() {
 /// fee_bps > 10000 should fail.
 fun test_create_pool_fee_too_high() {
     let mut ts = ts::begin(governor());
-    let (storage_id, owner_char_id, _, _, _) =
-        setup_pool_env(&mut ts, 100, 100, 0, 0);
+    let (storage_id, owner_char_id, _, _, _) = setup_pool_env(&mut ts, 100, 100, 0, 0);
 
     ts::next_tx(&mut ts, user_b());
     {
         let storage_unit = ts::take_shared_by_id<StorageUnit>(&ts, storage_id);
         let admin_cap = amm::create_pool(
             &storage_unit,
-            TOKEN_A_TYPE_ID, TOKEN_B_TYPE_ID,
-            100, 100, 50, 10001,
+            TOKEN_A_TYPE_ID,
+            TOKEN_B_TYPE_ID,
+            100,
+            100,
+            50,
+            10001,
             utf8(b"Bad pool"),
             ts.ctx(),
         );
