@@ -56,7 +56,11 @@ function App() {
         } : undefined;
         return (
             <>
-                <LandingPage onConnect={handleEnterTerminal} market={market} />
+                <LandingPage
+                    onConnect={handleEnterTerminal}
+                    market={market}
+                    showGlobalMarket={!SSU_ID}
+                />
                 <StatusBar />
             </>
         );

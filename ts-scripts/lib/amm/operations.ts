@@ -13,6 +13,7 @@
  *
  * Reference: https://docs.sui.io/concepts/transactions/prog-txn-blocks
  */
+import { bcs } from "@mysten/sui/bcs";
 import type { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction, type TransactionArgument } from "@mysten/sui/transactions";
 
@@ -590,6 +591,204 @@ export async function quoteSwap(
         bonusAmount: BigInt(decoded.bonus_amount),
         priceImpactBps: BigInt(decoded.price_impact_bps),
     };
+}
+
+// === Registry views ===
+
+/** Decoded `PoolMeta` row from the registry — same fields as the Move struct. */
+export interface PoolMetaRecord {
+    poolId: string;
+    ssuId: string;
+    pair: { lo: bigint; hi: bigint };
+    amp: bigint;
+    banner: string;
+    paused: boolean;
+    delisted: boolean;
+    createdAtMs: bigint;
+}
+
+/** Throws on devInspect failure with the parsed Move abort string. */
+async function devInspectFirstReturn(
+    client: SuiJsonRpcClient,
+    tx: Transaction,
+    sender: string
+): Promise<Uint8Array> {
+    const result = await client.devInspectTransactionBlock({
+        sender,
+        transactionBlock: tx,
+    });
+    if (result.effects.status.status !== "success") {
+        throw new Error(`devInspect failed: ${result.effects.status.error ?? "unknown"}`);
+    }
+    const returnValues = result.results?.[0]?.returnValues;
+    if (!returnValues || returnValues.length === 0) {
+        throw new Error("devInspect: no return values");
+    }
+    const [bytes] = returnValues[0];
+    return new Uint8Array(bytes);
+}
+
+/** Any address works for devInspect (no signature, no gas). */
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/**
+ * List every pool ID registered against the given canonical pair.
+ * Includes delisted pools (the registry's `by_pair` index is not pruned
+ * on delist, so traders with stuck deposits can still locate their pool).
+ * Filter on `delisted` from `fetchPoolMeta` if you only want active venues.
+ */
+export async function listPoolsByPair(
+    client: SuiJsonRpcClient,
+    args: {
+        registry: RegistryContext;
+        ammPackageIds: AmmPackageIds;
+        typeIdA: bigint;
+        typeIdB: bigint;
+        sender?: string;
+    }
+): Promise<string[]> {
+    const tx = new Transaction();
+    const pair = tx.add(
+        amm.makePair({
+            package: args.ammPackageIds.current,
+            arguments: { a: args.typeIdA, b: args.typeIdB },
+        })
+    );
+    tx.add(
+        amm.poolsByPair({
+            package: args.ammPackageIds.current,
+            arguments: {
+                registry: sharedRef(tx, args.registry.registryId, args.registry.registryIsv, false),
+                pair,
+            },
+        })
+    );
+    const bytes = await devInspectFirstReturn(client, tx, args.sender ?? ZERO_ADDRESS);
+    return bcs.vector(bcs.Address).parse(bytes);
+}
+
+/**
+ * List every pool ID hosted at the given SSU. Includes delisted pools —
+ * see `listPoolsByPair` for the same caveat.
+ */
+export async function listPoolsBySsu(
+    client: SuiJsonRpcClient,
+    args: {
+        registry: RegistryContext;
+        ammPackageIds: AmmPackageIds;
+        ssuId: string;
+        sender?: string;
+    }
+): Promise<string[]> {
+    const tx = new Transaction();
+    tx.add(
+        amm.poolsBySsu({
+            package: args.ammPackageIds.current,
+            arguments: {
+                registry: sharedRef(tx, args.registry.registryId, args.registry.registryIsv, false),
+                ssuId: args.ssuId,
+            },
+        })
+    );
+    const bytes = await devInspectFirstReturn(client, tx, args.sender ?? ZERO_ADDRESS);
+    return bcs.vector(bcs.Address).parse(bytes);
+}
+
+/**
+ * Fetch the full `PoolMeta` row for a single pool. Cheaper than reading
+ * every dynamic field on the pool object — the registry caches the
+ * display-relevant subset (pair, amp, banner, paused, delisted).
+ */
+export async function fetchPoolMeta(
+    client: SuiJsonRpcClient,
+    args: {
+        registry: RegistryContext;
+        ammPackageIds: AmmPackageIds;
+        poolId: string;
+        sender?: string;
+    }
+): Promise<PoolMetaRecord> {
+    const tx = new Transaction();
+    tx.add(
+        amm.poolMeta({
+            package: args.ammPackageIds.current,
+            arguments: {
+                registry: sharedRef(tx, args.registry.registryId, args.registry.registryIsv, false),
+                poolId: args.poolId,
+            },
+        })
+    );
+    const bytes = await devInspectFirstReturn(client, tx, args.sender ?? ZERO_ADDRESS);
+    const decoded = amm.PoolMeta.parse(bytes);
+    return {
+        poolId: decoded.pool_id,
+        ssuId: decoded.ssu_id,
+        pair: { lo: BigInt(decoded.pair.lo), hi: BigInt(decoded.pair.hi) },
+        amp: BigInt(decoded.amp),
+        banner: decoded.banner,
+        paused: decoded.paused,
+        delisted: decoded.delisted,
+        createdAtMs: BigInt(decoded.created_at_ms),
+    };
+}
+
+/**
+ * Discover every pool ever registered, then fetch the live `PoolMeta`
+ * for each. Pool universe comes from `PoolRegistered` events — pages
+ * through every event so a packaged with thousands of pools still works.
+ *
+ * Per-pool meta is fetched in parallel via `fetchPoolMeta`; the registry's
+ * indexes are O(1) per lookup so this is bounded by N RPC calls (one per
+ * pool). For UIs polling every few seconds, paginate or cache upstream.
+ */
+export async function fetchAllPoolMeta(
+    client: SuiJsonRpcClient,
+    args: {
+        registry: RegistryContext;
+        ammPackageIds: AmmPackageIds;
+        /** Original-package-qualified event type. Use `originalPackageId`
+         *  because event types are pinned to the publishing package. */
+        originalPackageId: string;
+        sender?: string;
+        /** Hard cap on pools fetched (newest first). */
+        limit?: number;
+    }
+): Promise<PoolMetaRecord[]> {
+    const eventType = `${args.originalPackageId}::amm::PoolRegistered`;
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    let cursor: { txDigest: string; eventSeq: string } | null = null;
+
+    while (true) {
+        const page = await client.queryEvents({
+            query: { MoveEventType: eventType },
+            cursor,
+            limit: 50,
+            order: "descending",
+        });
+        for (const ev of page.data) {
+            const poolId = (ev.parsedJson as { pool_id?: string } | null)?.pool_id;
+            if (poolId && !seen.has(poolId)) {
+                seen.add(poolId);
+                ordered.push(poolId);
+                if (args.limit && ordered.length >= args.limit) break;
+            }
+        }
+        if (args.limit && ordered.length >= args.limit) break;
+        if (!page.hasNextPage || !page.nextCursor) break;
+        cursor = page.nextCursor;
+    }
+
+    return Promise.all(
+        ordered.map((poolId) =>
+            fetchPoolMeta(client, {
+                registry: args.registry,
+                ammPackageIds: args.ammPackageIds,
+                poolId,
+                sender: args.sender,
+            })
+        )
+    );
 }
 
 /**
