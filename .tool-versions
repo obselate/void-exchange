@@ -1,0 +1,6 @@
+# Pinned tool versions for asdf / mise. CI uses the same SUI_RELEASE_TAG.
+# Bump deliberately: a new Sui CLI may produce different bytecode, so
+# regenerate Move bindings and re-run `pnpm test:move` after changing.
+nodejs 24.13.0
+pnpm 10.17.0
+sui mainnet-v1.70.2

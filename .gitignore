@@ -22,6 +22,9 @@ dapps/dist/
 .pnpm-store/
 move-contracts/**/build/**/
 
+# `sui move summary` output — regenerated on every `pnpm codegen` run
+move-contracts/**/package_summaries/
+
 # Tooling / session directories
 .claude/
 .planning/

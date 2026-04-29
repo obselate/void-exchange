@@ -1,0 +1,11 @@
+packages:
+  - "dapps"
+
+# Hoist these so both root and dapps see one copy. The shared
+# `ts-scripts/lib/` imports `@mysten/sui` types and the dapp consumes
+# `lib/` directly — they must resolve to the *same* package install or
+# TypeScript flags structurally-identical types as incompatible
+# (private-field leak across separate installs).
+onlyBuiltDependencies:
+  - "@swc/core"
+  - esbuild

@@ -6,7 +6,7 @@ SUI_CFG="${SUI_CONFIG_DIR:-/root/.sui}"
 KEYSTORE="$SUI_CFG/sui.keystore"
 CLIENT_YAML="$SUI_CFG/client.yaml"
 INIT_MARKER="$SUI_CFG/.initialized"
-ENV_FILE="/workspace/builder-scaffold/docker/.env.sui"
+ENV_FILE="/workspace/void-exchange/docker/.env.sui"
 
 # ---------- first-run: create keys ----------
 if [ ! -f "$INIT_MARKER" ]; then
@@ -186,11 +186,11 @@ echo " Keys:           docker/.env.sui"
 echo "================================================"
 echo ""
 echo "Layout:"
-echo "  /workspace/builder-scaffold/   – repo (syncs with host)"
+echo "  /workspace/void-exchange/   – repo (syncs with host)"
 echo "  /workspace/world-contracts/    – mount for world-contracts (syncs with host)"
 echo ""
 echo "Quick start:"
-echo "  cd /workspace/builder-scaffold/move-contracts/smart_gate_extension"
+echo "  cd /workspace/void-exchange/move-contracts/amm_extension"
 echo "  sui move build -e testnet"
 echo ""
 

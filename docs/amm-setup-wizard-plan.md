@@ -100,7 +100,7 @@ Ask `Start dApp? [Y/n]` → spawn `pnpm dev` in dapps/ with inherited stdio.
 
 ## Verification
 
-1. `cd builder-scaffold && tsx ts-scripts/amm_extension/setup-wizard.ts`
+1. `cd void-exchange && tsx ts-scripts/amm_extension/setup-wizard.ts`
 2. Answer prompts (or accept defaults)
 3. Verify authorize tx succeeds (or skips if already done)
 4. Verify pool created — Pool ID, ISV, AdminCap ID printed

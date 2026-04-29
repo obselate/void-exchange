@@ -1,0 +1,4 @@
+# Mark @mysten/codegen output as generated. GitHub collapses these in PR
+# diffs and excludes them from language statistics. Regenerate via
+# `pnpm codegen`; do not edit by hand.
+ts-scripts/lib/amm/generated/** linguist-generated=true

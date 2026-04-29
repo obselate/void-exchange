@@ -27,13 +27,15 @@ For more info on Smart Character, Network Node, and Storage Unit, see the [world
 
 ## Quick start (world only)
 
-For the **full** builder flow (environment → world → contract → scripts), follow one guide: [Docker](../docs/builder-flow-docker.md) or [Host](../docs/builder-flow-host.md). The steps below cover only the world-contracts part; assume `world-contracts` and `builder-scaffold` are sibling directories.
+These steps cover only the `world-contracts` part. For the broader Void
+Exchange dev flow see [`docs/development.md`](../docs/development.md).
+Assume `world-contracts` and `void-exchange` are sibling directories.
 
 > **Coming soon:** Clone, deploy, configure, seed, and copy will be simplified into a single setup command. Move package dependencies will resolve via [MVR](https://docs.sui.io/guides/developer/packages/move-package-management).
 
 ### 1. Clone and deploy the world
 
-Use a **stable tag** so builder-scaffold stays compatible if world-contracts has breaking changes on `main`. 
+Use a **stable tag** so void-exchange stays compatible if world-contracts has breaking changes on `main`. 
 **Stable tag:** `v0.0.18`
 
 ```bash
@@ -55,15 +57,15 @@ Creates the Smart Character, Network Node, Storage Unit, and Gates listed above:
 pnpm create-test-resources localnet   # use same network as deploy/configure
 ```
 
-### 3. Copy output into builder-scaffold
+### 3. Copy output into void-exchange
 
 ```bash
 # From world-contracts directory
 NETWORK=localnet   # or testnet
-mkdir -p ../builder-scaffold/deployments/$NETWORK/
-cp -r deployments/* ../builder-scaffold/deployments/
-cp test-resources.json ../builder-scaffold/test-resources.json
-cp "contracts/world/Pub.localnet.toml" "../builder-scaffold/deployments/localnet/Pub.localnet.toml"
+mkdir -p ../void-exchange/deployments/$NETWORK/
+cp -r deployments/* ../void-exchange/deployments/
+cp test-resources.json ../void-exchange/test-resources.json
+cp "contracts/world/Pub.localnet.toml" "../void-exchange/deployments/localnet/Pub.localnet.toml"
 ```
 
 - `deployments/<network>/extracted-object-ids.json` — world package ID and shared object IDs
@@ -73,6 +75,8 @@ cp "contracts/world/Pub.localnet.toml" "../builder-scaffold/deployments/localnet
 
 ## Next steps
 
-- [Move contracts](../move-contracts/readme.md) — build and publish your extension (e.g. `smart_gate_extension`)
-- [TypeScript scripts](../ts-scripts/readme.md) — run scripts against the seeded resources
-- Full flow in one place: [Docker](../docs/builder-flow-docker.md) or [Host](../docs/builder-flow-host.md)
+- [Move contracts](../move-contracts/readme.md) — build and publish the
+  AMM extension.
+- [TypeScript scripts](../ts-scripts/readme.md) — run scripts against the
+  seeded resources.
+- [Development guide](../docs/development.md) — toolchain, workflows, CI.
